@@ -13,6 +13,7 @@ class AuctionErrorMessage:
     NOT_ADMIN = "{}NOT_ADMIN".format(PREFIX)
     CAN_NOT_CREATE_AN_AUCTION_TWICE = "{}CAN_NOT_CREATE_AN_AUCTION_TWICE".format(PREFIX)
     AUCTION_ID_SHOULD_BE_CONSECUTIVE = "{}AUCTION_ID_SHOULD_BE_CONSECUTIVE".format(PREFIX)
+    NOT_100 = "{}SHARES_MUST_SUM_UP_TO_100".format(PREFIX)
 
 INITIAL_BID = sp.mutez(900000)
 MINIMAL_BID = sp.mutez(100000)
@@ -52,7 +53,7 @@ class Contract(sp.Contract):
         }
 
         # Helper method that builds the metadata and produces the JSON representation as an artifact.
-        self.init_metadata("example1", metadata)
+        self.init_metadata("BLCKBOOK-FA2", metadata) #the string is just for the output of the online-IDE
 
         self.init_type(sp.TRecord(
                 administrator = sp.TAddress, 
@@ -198,8 +199,7 @@ class Contract(sp.Contract):
 
     @sp.offchain_view(pure = True)
     def count_tokens(self):
-        """Get how many tokens are in this FA2 contract.
-        """
+        """Get how many tokens are in this FA2 contract."""
         sp.result(self.data.all_tokens)
 
     @sp.offchain_view(pure = True)
@@ -226,6 +226,9 @@ class Contract(sp.Contract):
         )
 
 class AuctionCreateRequest():
+    """ 
+    The data-type class for creating a new auction
+    """
     def get_type():
         return sp.TRecord(
         auction_id=sp.TNat,
@@ -236,20 +239,25 @@ class AuctionCreateRequest():
         bid_amount=sp.TMutez,
         ).layout(("auction_id",("token_id",("end_timestamp",("voter_amount",("uploader","bid_amount"))))))
 
-
 class Auction():
+    """ 
+    The data-type class for a single auction contained in the auction-house-contract
+    """
     def get_type():
         return sp.TRecord(
             token_id=sp.TNat, 
             end_timestamp=sp.TTimestamp,
             voter_amount=sp.TNat,
             uploader=sp.TAddress,
-            bid_amount=sp.TMutez,
+            bid_amount=sp.TMutez, #holds the current bid (at the start the minimal bid)
             bidder=sp.TAddress,
         ).layout(("token_id",("end_timestamp",("voter_amount",("uploader",("bid_amount","bidder"))))))
 
 
 class AuctionHouse(sp.Contract):
+    """ 
+    The smart contract for the actual Auction-House
+    """
     def __init__(self, administrator, blckbook_collector, money_pool, token_address):
         sp.set_type_expr(administrator, sp.TAddress)
         sp.set_type_expr(blckbook_collector, sp.TAddress)
@@ -285,21 +293,47 @@ class AuctionHouse(sp.Contract):
 
     @sp.entry_point
     def set_token_address(self, params):
+        """ 
+        Entry-Point for setting the FA2-Contract Address
+        """
         sp.verify(sp.sender == self.data.administrator, AuctionErrorMessage.NOT_ADMIN)
         self.data.token_address = params
 
     @sp.entry_point
     def set_blckbook_collector(self, params):
+        """ 
+        Entry-Point for setting the address of the blckbook_collector which will get the blckbook share of the auction-prices
+        """
         sp.verify(sp.sender == self.data.administrator, AuctionErrorMessage.NOT_ADMIN)
         self.data.blckbook_collector = params
     
     @sp.entry_point
     def set_money_pool_address(self, params):
+        """ 
+        Entry-Point for setting the address of the money_pool which will get the shares for the voters and will get called with the info how much every voter gets
+        """
         sp.verify(sp.sender == self.data.administrator, AuctionErrorMessage.NOT_ADMIN)
         self.data.money_pool = params
 
     @sp.entry_point
+    def set_shares(self, blckbook_share, uploader_share, voter_share):
+        """ 
+        Entry-Point for setting the share percentages of the auction-price
+        """
+        sp.verify(sp.sender == self.data.administrator, AuctionErrorMessage.NOT_ADMIN)
+        sp.set_type_expr(blckbook_share, sp.TNat)
+        sp.set_type_expr(uploader_share, sp.TNat)
+        sp.set_type_expr(voter_share, sp.TNat)
+        sp.verify(blckbook_share + uploader_share + voter_share == sp.nat(100), AuctionErrorMessage.NOT_100)
+        self.data.blckbook_share = blckbook_share
+        self.data.uploader_share = uploader_share
+        self.data.voter_share = voter_share
+
+    @sp.entry_point
     def create_auction(self, create_auction_request):
+        """ 
+        Entry-Point for creating a new auction
+        """
         sp.verify(sp.sender == self.data.administrator, AuctionErrorMessage.NOT_ADMIN) # only admin can create auction (nft needs to be minted for auction-contract)
         sp.set_type_expr(create_auction_request, AuctionCreateRequest.get_type())
 
@@ -312,6 +346,7 @@ class AuctionHouse(sp.Contract):
         sp.verify(create_auction_request.bid_amount >= MINIMAL_BID, message=AuctionErrorMessage.BID_AMOUNT_TOO_LOW)
         sp.verify(~self.data.auctions.contains(create_auction_request.auction_id), message=AuctionErrorMessage.ID_ALREADY_IN_USE)
 
+        #set the actual auction in the auctions
         self.data.auctions[create_auction_request.auction_id] = sp.record(
         token_id=create_auction_request.token_id,
         end_timestamp=create_auction_request.end_timestamp,
@@ -320,35 +355,47 @@ class AuctionHouse(sp.Contract):
         voter_amount=create_auction_request.voter_amount,
         bidder=create_auction_request.uploader)
         
+        #and increase the auction_id counter
         self.data.all_auctions = create_auction_request.auction_id + 1
 
     @sp.entry_point
     def bid(self, auction_id):
+        """ 
+        Entry-Point for bidding on an auction (will be called by the users)
+        """
         sp.set_type_expr(auction_id, sp.TNat)
-        auction = self.data.auctions[auction_id]
+        auction = self.data.auctions[auction_id] #find the auction the user wants to bid on
 
         sp.verify(sp.sender!=auction.uploader, message=AuctionErrorMessage.UPLOADER_CANNOT_BID)
         sp.verify(sp.amount>=auction.bid_amount+BID_STEP_THRESHOLD, message=AuctionErrorMessage.BID_AMOUNT_TOO_LOW)
         sp.verify(sp.now<auction.end_timestamp, message=AuctionErrorMessage.AUCTION_IS_OVER)
 
-        sp.if auction.bidder != auction.uploader:
+        #do not send the initial amount to the uploader because we just use this as a minimal amount for the auction
+        sp.if auction.bidder != auction.uploader: 
             sp.send(auction.bidder, auction.bid_amount)
+            # otherwise we transfer the previous bid_amount to the previous highest bidder
 
         auction.bidder = sp.sender
         auction.bid_amount = sp.amount
+        
+        #This will extend an auction-timeframe if an auction is bid on in the last 5 minutes. Which is common practice in tezos auctions
+        
         sp.if auction.end_timestamp-sp.now < AUCTION_EXTENSION_THRESHOLD:
             auction.end_timestamp = sp.now.add_seconds(AUCTION_EXTENSION_THRESHOLD)
+
         self.data.auctions[auction_id] = auction
 
     @sp.entry_point
     def end_auction(self, auction_id):
-        # what if the auction ended but nobody bid anything?
+        """ 
+        Entry-Point for ending an auction. Can actually only be done by the admin because we this calls the money_pool
+        """
         sp.set_type_expr(auction_id, sp.TNat)
         auction = self.data.auctions[auction_id]
 
         sp.verify(sp.now > auction.end_timestamp, message=AuctionErrorMessage.AUCTION_IS_ONGOING)
 
-        # send the actual money here
+        # calculation of the shares
         bid_amount = sp.local("bid_amount", sp.utils.mutez_to_nat(auction.bid_amount))
         percentage = sp.local("percentage", bid_amount.value // sp.nat(100))
         percentage_remainder = sp.local("percentage_remainder", bid_amount.value % sp.nat(100))
@@ -372,12 +419,16 @@ class AuctionHouse(sp.Contract):
                 money_pool_contract,
             )
 
+        # we always transfer to the highest-bidder which could be the uploader (if no-one bid on the auction)
         sp.transfer([BatchTransfer.item(sp.self_address, [sp.record(to_=auction.bidder, token_id=auction.token_id, amount=sp.nat(1))])],
         sp.mutez(0), token_contract)
 
-        del self.data.auctions[auction_id] # this will delete the entry-maybe we don't want this
+        del self.data.auctions[auction_id] # this will delete the auction-entry (so we reduce the storage-diff)
 
 class AddVote():
+    """ 
+    The data-type class for adding votes on a specific auction
+    """
     def get_type():
         return sp.TRecord(
             voter_addresses=sp.TList(sp.TAddress), 
@@ -392,6 +443,9 @@ class MoneyPoolErrorMessage:
     NO_VOTES = "{}ALL_VOTES_ALREADY_PAYED_OUT".format(PREFIX)
 
 class AuctionReward():
+    """ 
+    The data-type class for adding a reward in mutez 
+    """
     def get_type():
         return sp.TRecord(
             auction_id=sp.TNat,
@@ -705,6 +759,22 @@ def test():
                                           token_id = 0)
                             ])
     ]).run(sender = bob) #just to make sure the token is now in bob's posession
+
+
+    scenario.h2("Set shares to weird amounts and let the entry-point fail")
+    auction_house.set_shares(blckbook_share = sp.nat(100), uploader_share = sp.nat(100), voter_share = sp.nat(100)).run(sender=admin, valid=False)
+    auction_house.set_shares(blckbook_share = sp.nat(90), uploader_share = sp.nat(10), voter_share = sp.nat(10)).run(sender=admin, valid=False)
+    auction_house.set_shares(blckbook_share = sp.nat(42), uploader_share = sp.nat(42), voter_share = sp.nat(10)).run(sender=admin, valid=False)
+
+
+    scenario.h2("Set shares to a correct amount")
+    auction_house.set_shares(blckbook_share = sp.nat(10), uploader_share = sp.nat(80), voter_share = sp.nat(10)).run(sender=admin)
+
+    scenario.h2("Only admin can set shares")
+    auction_house.set_shares(blckbook_share = sp.nat(10), uploader_share = sp.nat(80), voter_share = sp.nat(10)).run(sender=bob, valid=False)
+
+    scenario.h2("Try to bid on auctions, that do not exist")
+    scenario += auction_house.bid(420).run(sender=bob,amount=sp.mutez(401001327), now=sp.timestamp(0).add_minutes(3), valid=False)
 
 @sp.add_test(name = "Money Pool")
 def test():
