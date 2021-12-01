@@ -44,6 +44,11 @@ class Contract(sp.Contract):
             "authors": ["Niels Hanselmann"], 
             "homepage": "https://blckbook.vote",
             "source": {"tools": ["SmartPy"], "location": "https://github.com/BLCKBOOK/BLCKBOOK-contract"},
+            "permissions": {
+                "operator": "owner-or-operator-transfer",
+                "receiver": "owner-no-hook",
+                "sender": "owner-no-hook"
+            },
         }
 
         # Helper method that builds the metadata and produces the JSON representation as an artifact.

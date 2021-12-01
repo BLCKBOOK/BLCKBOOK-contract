@@ -28,7 +28,7 @@
               { "prim": "GET", "args": [ { "int": "5" } ] },
               { "prim": "SWAP" },
               { "prim": "GET" },
-              { "prim": "IF_NONE", "args": [ [ { "prim": "PUSH", "args": [ { "prim": "int" }, { "int": "192" } ] }, { "prim": "FAILWITH" } ], [] ] }
+              { "prim": "IF_NONE", "args": [ [ { "prim": "PUSH", "args": [ { "prim": "int" }, { "int": "197" } ] }, { "prim": "FAILWITH" } ], [] ] }
             ]
           }
         }
@@ -137,5 +137,6 @@
   "interfaces": [ "TZIP-012", "TZIP-016" ],
   "authors": [ "Niels Hanselmann" ],
   "homepage": "https://blckbook.vote",
-  "source": { "tools": [ "SmartPy" ], "location": "https://github.com/BLCKBOOK/BLCKBOOK-contract" }
+  "source": { "tools": [ "SmartPy" ], "location": "https://github.com/BLCKBOOK/BLCKBOOK-contract" },
+  "permissions": { "operator": "owner-or-operator-transfer", "receiver": "owner-no-hook", "sender": "owner-no-hook" }
 }
