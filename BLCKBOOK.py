@@ -25,6 +25,30 @@ BID_STEP_THRESHOLD = sp.mutez(100000)
 class Contract(sp.Contract):
     def __init__(self, administrator):
         sp.set_type_expr(administrator, sp.TAddress)
+
+        list_of_views = [
+            self.get_balance
+            , self.does_token_exist
+            , self.count_tokens
+            , self.all_tokens
+            , self.is_operator
+        ]
+
+        metadata = {
+            "name": "BLCKBOOK",
+            "description": "BLCKBOOK beta implementation. Uses the didactic reference implementation of FA2,"
+                + " a.k.a. TZIP-012, using SmartPy.\n\n",
+            "version": "FA2",
+            "views": list_of_views,
+            "interfaces": ["TZIP-012", "TZIP-016"],
+            "authors": ["Niels Hanselmann"], 
+            "homepage": "https://blckbook.vote",
+            "source": {"tools": ["SmartPy"], "location": "https://github.com/BLCKBOOK/BLCKBOOK-contract"},
+        }
+
+        # Helper method that builds the metadata and produces the JSON representation as an artifact.
+        self.init_metadata("example1", metadata)
+
         self.init_type(sp.TRecord(
                 administrator = sp.TAddress, 
                 all_tokens = sp.TNat, 
@@ -152,6 +176,49 @@ class Contract(sp.Contract):
         sp.verify(self.data.ledger.contains(user), 'FA2_WRONG_ADDRESS_FOR_BURN')
         sp.verify(self.data.ledger[user].balance == sp.nat(1), 'FA2_ADDRESS_DOES_NOT_HAVE_TOKEN_FOR_BURN')
         self.data.ledger[user].balance = sp.as_nat(self.data.ledger[user].balance - sp.nat(1))
+
+    @sp.offchain_view(pure = True)
+    def get_balance(self, req):
+        """This is the `get_balance` view defined in TZIP-12."""
+        sp.set_type(
+            req, sp.TRecord(
+                owner = sp.TAddress,
+                token_id = sp.TNat
+            ).layout(("owner", "token_id")))
+        user = sp.set_type_expr(req.owner, sp.TAddress)
+        token = sp.set_type_expr(req.token_id, sp.TNat)
+        ledger_key = sp.pair(user, token)
+        sp.verify(self.data.token_metadata.contains(req.token_id), message = 'FA2_TOKEN_UNDEFINED')
+        sp.result(self.data.ledger[ledger_key].balance)
+
+    @sp.offchain_view(pure = True)
+    def count_tokens(self):
+        """Get how many tokens are in this FA2 contract.
+        """
+        sp.result(self.data.all_tokens)
+
+    @sp.offchain_view(pure = True)
+    def does_token_exist(self, tok):
+        "Ask whether a token ID is exists."
+        sp.set_type(tok, sp.TNat)
+        sp.result(self.data.token_metadata.contains(tok))
+
+    @sp.offchain_view(pure = True)
+    def all_tokens(self):
+        sp.result(sp.range(0, self.data.all_tokens))
+
+    @sp.offchain_view(pure = True)
+    def is_operator(self, query):
+        sp.set_type(query,
+                    sp.TRecord(token_id = sp.TNat,
+                               owner = sp.TAddress,
+                               operator = sp.TAddress).layout(
+                                   ("owner", ("operator", "token_id"))))
+        sp.result(
+            self.data.operators.contains(sp.record(owner = query.owner,
+                                        operator = query.operator,
+                                        token_id = query.token_id))
+        )
 
 class AuctionCreateRequest():
     def get_type():
