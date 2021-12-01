@@ -14,6 +14,7 @@ class AuctionErrorMessage:
     CAN_NOT_CREATE_AN_AUCTION_TWICE = "{}CAN_NOT_CREATE_AN_AUCTION_TWICE".format(PREFIX)
     AUCTION_ID_SHOULD_BE_CONSECUTIVE = "{}AUCTION_ID_SHOULD_BE_CONSECUTIVE".format(PREFIX)
     NOT_100 = "{}SHARES_MUST_SUM_UP_TO_100".format(PREFIX)
+    AUCTION_DOES_NOT_EXIST = "{}DOES_NOT_EXIST".format(PREFIX)
 
 INITIAL_BID = sp.mutez(900000)
 MINIMAL_BID = sp.mutez(100000)
@@ -104,11 +105,8 @@ class Contract(sp.Contract):
         sp.verify(sp.sender == self.data.administrator, 'FA2_NOT_ADMIN')
         sp.verify(params.amount == 1, 'NFT-asset: amount <> 1')
         sp.verify(~ (params.token_id < self.data.all_tokens), 'NFT-asset: cannot mint twice same token')
-        sp.if self.data.ledger.contains((sp.set_type_expr(params.address, sp.TAddress), sp.set_type_expr(params.token_id, sp.TNat))):
-            self.data.ledger[(sp.set_type_expr(params.address, sp.TAddress), sp.set_type_expr(params.token_id, sp.TNat))].balance += params.amount
-        sp.else:
-            self.data.ledger[(sp.set_type_expr(params.address, sp.TAddress), 
-                sp.set_type_expr(params.token_id, sp.TNat))] = sp.record(balance = params.amount)
+        self.data.ledger[(sp.set_type_expr(params.address, sp.TAddress), 
+            sp.set_type_expr(params.token_id, sp.TNat))] = sp.record(balance = params.amount)
         sp.if ~ (params.token_id < self.data.all_tokens):
             sp.verify(self.data.all_tokens == params.token_id, 'Token-IDs should be consecutive')
             self.data.all_tokens = params.token_id + 1
@@ -181,7 +179,7 @@ class Contract(sp.Contract):
         user = (sp.set_type_expr(address, sp.TAddress), sp.set_type_expr(token_id, sp.TNat))
         sp.verify(self.data.ledger.contains(user), 'FA2_WRONG_ADDRESS_FOR_BURN')
         sp.verify(self.data.ledger[user].balance == sp.nat(1), 'FA2_ADDRESS_DOES_NOT_HAVE_TOKEN_FOR_BURN')
-        self.data.ledger[user].balance = sp.as_nat(self.data.ledger[user].balance - sp.nat(1))
+        self.data.ledger[user].balance = sp.nat(0)
 
     @sp.offchain_view(pure = True)
     def get_balance(self, req):
@@ -340,7 +338,6 @@ class AuctionHouse(sp.Contract):
         sp.verify(~(create_auction_request.auction_id < self.data.all_auctions), message=AuctionErrorMessage.CAN_NOT_CREATE_AN_AUCTION_TWICE)
         sp.verify(self.data.all_auctions == create_auction_request.auction_id, message=AuctionErrorMessage.AUCTION_ID_SHOULD_BE_CONSECUTIVE)
 
-        token_contract = sp.contract(BatchTransfer.get_transfer_type(), self.data.token_address, entry_point = "transfer").open_some()
         sp.verify(create_auction_request.end_timestamp  >= sp.now.add_hours(MINIMAL_AUCTION_DURATION), message=AuctionErrorMessage.END_DATE_TOO_SOON)
         sp.verify(create_auction_request.end_timestamp  <= sp.now.add_hours(MAXIMAL_AUCTION_DURATION), message=AuctionErrorMessage.END_DATE_TOO_LATE)
         sp.verify(create_auction_request.bid_amount >= MINIMAL_BID, message=AuctionErrorMessage.BID_AMOUNT_TOO_LOW)
@@ -364,11 +361,12 @@ class AuctionHouse(sp.Contract):
         Entry-Point for bidding on an auction (will be called by the users)
         """
         sp.set_type_expr(auction_id, sp.TNat)
+        sp.verify(self.data.auctions.contains(auction_id), message = AuctionErrorMessage.AUCTION_DOES_NOT_EXIST)
         auction = self.data.auctions[auction_id] #find the auction the user wants to bid on
 
-        sp.verify(sp.sender!=auction.uploader, message=AuctionErrorMessage.UPLOADER_CANNOT_BID)
-        sp.verify(sp.amount>=auction.bid_amount+BID_STEP_THRESHOLD, message=AuctionErrorMessage.BID_AMOUNT_TOO_LOW)
-        sp.verify(sp.now<auction.end_timestamp, message=AuctionErrorMessage.AUCTION_IS_OVER)
+        sp.verify(sp.sender != auction.uploader, message = AuctionErrorMessage.UPLOADER_CANNOT_BID)
+        sp.verify(sp.amount >= auction.bid_amount + BID_STEP_THRESHOLD, message=AuctionErrorMessage.BID_AMOUNT_TOO_LOW)
+        sp.verify(sp.now < auction.end_timestamp, message = AuctionErrorMessage.AUCTION_IS_OVER)
 
         #do not send the initial amount to the uploader because we just use this as a minimal amount for the auction
         sp.if auction.bidder != auction.uploader: 
@@ -391,43 +389,44 @@ class AuctionHouse(sp.Contract):
         Entry-Point for ending an auction. Can actually only be done by the admin because we this calls the money_pool
         """
         sp.set_type_expr(auction_id, sp.TNat)
+        sp.verify(self.data.auctions.contains(auction_id), message = AuctionErrorMessage.AUCTION_DOES_NOT_EXIST)
         auction = self.data.auctions[auction_id]
 
         sp.verify(sp.now > auction.end_timestamp, message=AuctionErrorMessage.AUCTION_IS_ONGOING)
 
-        # calculation of the shares
-        bid_amount = sp.local("bid_amount", sp.utils.mutez_to_nat(auction.bid_amount))
-        percentage = sp.local("percentage", bid_amount.value // sp.nat(100))
-        percentage_remainder = sp.local("percentage_remainder", bid_amount.value % sp.nat(100))
-        uploader_reward = sp.local("uploader_reward", percentage.value * self.data.uploader_share)
-        voter_reward = sp.local("voter_reward", (percentage.value * self.data.voter_share) // auction.voter_amount)
-        remainder2 = sp.local("remainder2", (percentage.value * self.data.voter_share) % auction.voter_amount)
-        voter_transaction = sp.local("voter_transaction", voter_reward.value * auction.voter_amount)
-        blckbook_reward = sp.local("blckbook_reward", self.data.blckbook_share * percentage.value + percentage_remainder.value + remainder2.value)
-
-        token_contract = sp.contract(BatchTransfer.get_type(), self.data.token_address, entry_point = "transfer").open_some()
-
-        money_pool_contract = sp.contract(AuctionReward.get_type(), self.data.money_pool, entry_point = "enter_auction").open_some()
-
         # somebody bid who isn't the uploader => we actually got value
         sp.if auction.bidder != auction.uploader:
+            # calculation of the shares
+            bid_amount = sp.local("bid_amount", sp.utils.mutez_to_nat(auction.bid_amount))
+            percentage = sp.local("percentage", bid_amount.value // sp.nat(100))
+            percentage_remainder = sp.local("percentage_remainder", bid_amount.value % sp.nat(100))
+            uploader_reward = sp.local("uploader_reward", percentage.value * self.data.uploader_share)
+            voter_reward = sp.local("voter_reward", (percentage.value * self.data.voter_share) // auction.voter_amount)
+            remainder2 = sp.local("remainder2", (percentage.value * self.data.voter_share) % auction.voter_amount)
+            voter_transaction = sp.local("voter_transaction", voter_reward.value * auction.voter_amount)
+            blckbook_reward = sp.local("blckbook_reward", self.data.blckbook_share * percentage.value + percentage_remainder.value + remainder2.value)
+
+            money_pool_contract = sp.contract(AuctionReward.get_type(), self.data.money_pool, entry_point = "enter_auction").open_some()
+
             sp.send(auction.uploader, sp.utils.nat_to_mutez(uploader_reward.value))
             sp.send(self.data.blckbook_collector, sp.utils.nat_to_mutez(blckbook_reward.value))
             sp.transfer(
-                sp.record(auction_id=auction_id, reward=sp.utils.nat_to_mutez(voter_reward.value)), 
+                sp.record(auction_id=auction.token_id, reward=sp.utils.nat_to_mutez(voter_reward.value)), 
                 sp.utils.nat_to_mutez(voter_transaction.value),
                 money_pool_contract,
             )
+
+        token_contract = sp.contract(BatchTransfer.get_type(), self.data.token_address, entry_point = "transfer").open_some()
 
         # we always transfer to the highest-bidder which could be the uploader (if no-one bid on the auction)
         sp.transfer([BatchTransfer.item(sp.self_address, [sp.record(to_=auction.bidder, token_id=auction.token_id, amount=sp.nat(1))])],
         sp.mutez(0), token_contract)
 
-        del self.data.auctions[auction_id] # this will delete the auction-entry (so we reduce the storage-diff)
+        del self.data.auctions[auction_id] #this will delete the auction-entry (so we reduce the storage-diff)- otherwise make it so an auction can not be ended twice
 
 class AddVote():
     """ 
-    The data-type class for adding votes on a specific auction
+    The data-type class for adding votes on a specific artwork
     """
     def get_type():
         return sp.TRecord(
@@ -440,7 +439,7 @@ class MoneyPoolErrorMessage:
     NOT_ADMIN = "{}NOT_ADMIN".format(PREFIX)
     AUCTION_ALREADY_RESOLVED = "{}AUCTION_ALREADY_RESOLVED".format(PREFIX)
     NOT_A_VOTER = "{}NOT_A_VOTER_OR_ALREADY_WITHDRAWN".format(PREFIX)
-    NO_VOTES = "{}ALL_VOTES_ALREADY_PAYED_OUT".format(PREFIX)
+    ALL_VOTES_ALREADY_PAYED_OUT = "{}ALL_VOTES_ALREADY_PAYED_OUT".format(PREFIX)
 
 class AuctionReward():
     """ 
@@ -473,6 +472,7 @@ class MoneyPool(sp.Contract):
 
     @sp.entry_point
     def enter_auction(self, params):
+        # maybe change this so a user can resolve the auction to check for sender = AuctionHouse
         sp.verify(sp.source == self.data.administrator, MoneyPoolErrorMessage.NOT_ADMIN)
         sp.set_type_expr(params, AuctionReward.get_type())
         sp.verify(~self.data.auctions.contains(params.auction_id), MoneyPoolErrorMessage.AUCTION_ALREADY_RESOLVED)
@@ -501,7 +501,7 @@ class MoneyPool(sp.Contract):
         sp.if (sum.value > sp.mutez(0)):
             sp.send(sp.sender, sum.value)
         sp.else:
-            sp.failwith(MoneyPoolErrorMessage.NO_VOTES)
+            sp.failwith(MoneyPoolErrorMessage.ALL_VOTES_ALREADY_PAYED_OUT)
 
 class BatchTransfer():
     def get_transfer_type():
