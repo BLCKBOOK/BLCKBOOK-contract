@@ -1,28 +1,39 @@
 import smartpy as sp
 
-class AuctionErrorMessage:
-    PREFIX = "AUC_"
-    ID_ALREADY_IN_USE = "{}ID_ALREADY_IN_USE".format(PREFIX)
-    UPLOADER_CANNOT_BID = "{}UPLOADER_CANNOT_BID".format(PREFIX)
-    BID_AMOUNT_TOO_LOW = "{}BID_AMOUNT_TOO_LOW".format(PREFIX)
-    AUCTION_IS_OVER = "{}AUCTION_IS_OVER".format(PREFIX)
-    AUCTION_IS_ONGOING = "{}AUCTION_IS_ONGOING".format(PREFIX)
-    SENDER_NOT_BIDDER = "{}SENDER_NOT_BIDDER".format(PREFIX)
-    END_DATE_TOO_SOON = "{}END_DATE_TOO_SOON".format(PREFIX)
-    END_DATE_TOO_LATE = "{}END_DATE_TOO_LATE".format(PREFIX)
-    NOT_ADMIN = "{}NOT_ADMIN".format(PREFIX)
-    CAN_NOT_CREATE_AN_AUCTION_TWICE = "{}CAN_NOT_CREATE_AN_AUCTION_TWICE".format(PREFIX)
-    AUCTION_ID_SHOULD_BE_CONSECUTIVE = "{}AUCTION_ID_SHOULD_BE_CONSECUTIVE".format(PREFIX)
-    NOT_100 = "{}SHARES_MUST_SUM_UP_TO_100".format(PREFIX)
-    AUCTION_DOES_NOT_EXIST = "{}DOES_NOT_EXIST".format(PREFIX)
+class BatchTransfer():
+    """
+    Class for the transfer endpoint of the FA2-Token contract
+    """
+    def get_transfer_type():
+        tx_type = sp.TRecord(to_ = sp.TAddress,
+                             token_id = sp.TNat,
+                             amount = sp.TNat)
+        tx_type = tx_type.layout(
+            ("to_", ("token_id", "amount"))
+        )
+        transfer_type = sp.TRecord(from_ = sp.TAddress,
+                                   txs = sp.TList(tx_type)).layout(
+                                       ("from_", "txs"))
+        return transfer_type
 
-INITIAL_BID = sp.mutez(900000)
-MINIMAL_BID = sp.mutez(100000)
-INITIAL_AUCTION_DURATION = sp.int(24*5) # 5 days
-MINIMAL_AUCTION_DURATION = sp.int(1) # 1 hour
-MAXIMAL_AUCTION_DURATION = sp.int(24*14) # 14 days
-AUCTION_EXTENSION_THRESHOLD = sp.int(60*5) # 5 minutes. Check whether we actually want this
-BID_STEP_THRESHOLD = sp.mutez(100000)
+    def get_type():
+        return sp.TList(BatchTransfer.get_transfer_type())
+
+    def item(from_, txs):
+        return sp.set_type_expr(sp.record(from_ = from_, txs = txs), BatchTransfer.get_transfer_type())
+
+class Operator:
+    def get_type():
+        t = sp.TRecord(
+            owner = sp.TAddress,
+            operator = sp.TAddress,
+            token_id = sp.TNat).layout(("owner", ("operator", "token_id")))
+        return t
+    def make(owner, operator, token_id):
+        r = sp.record(owner = owner,
+                      operator = operator,
+                      token_id = token_id)
+        return sp.set_type_expr(r, Operator.get_type())
 
 class TokensContract(sp.Contract):
     def __init__(self, administrator):
@@ -61,8 +72,7 @@ class TokensContract(sp.Contract):
                 all_tokens = sp.TNat, 
                 ledger = sp.TBigMap(sp.TPair(sp.TAddress, sp.TNat), sp.TRecord(balance = sp.TNat).layout("balance")),
                 metadata = sp.TBigMap(sp.TString, sp.TBytes),
-                operators = sp.TBigMap(sp.TRecord(operator = sp.TAddress, owner = sp.TAddress, token_id = sp.TNat)
-                .layout(("owner", ("operator", "token_id"))), sp.TUnit),
+                operators = sp.TBigMap(Operator.get_type(), sp.TUnit),
                 paused = sp.TBool,
                 token_metadata = sp.TBigMap(sp.TNat, sp.TRecord(token_id = sp.TNat, token_info = sp.TMap(sp.TString, sp.TBytes))
                 .layout(("token_id", "token_info")))
@@ -73,7 +83,7 @@ class TokensContract(sp.Contract):
             all_tokens = 0,
             ledger = sp.big_map(tkey = sp.TPair(sp.TAddress, sp.TNat), tvalue = sp.TRecord(balance = sp.TNat)),
             metadata = sp.big_map(tkey = sp.TString, tvalue = sp.TBytes),
-            operators = sp.big_map(tkey = sp.TRecord(operator = sp.TAddress, owner = sp.TAddress, token_id = sp.TNat), tvalue = sp.TUnit),
+            operators = sp.big_map(tkey = Operator.get_type(), tvalue = sp.TUnit),
             paused = False,
             token_metadata = sp.big_map(
                 tkey = sp.TNat,
@@ -223,7 +233,31 @@ class TokensContract(sp.Contract):
                                         token_id = query.token_id))
         )
 
-class AuctionCreateRequest():
+class AuctionErrorMessage:
+    PREFIX = "AUC_"
+    ID_ALREADY_IN_USE = "{}ID_ALREADY_IN_USE".format(PREFIX)
+    UPLOADER_CANNOT_BID = "{}UPLOADER_CANNOT_BID".format(PREFIX)
+    BID_AMOUNT_TOO_LOW = "{}BID_AMOUNT_TOO_LOW".format(PREFIX)
+    AUCTION_IS_OVER = "{}AUCTION_IS_OVER".format(PREFIX)
+    AUCTION_IS_ONGOING = "{}AUCTION_IS_ONGOING".format(PREFIX)
+    SENDER_NOT_BIDDER = "{}SENDER_NOT_BIDDER".format(PREFIX)
+    END_DATE_TOO_SOON = "{}END_DATE_TOO_SOON".format(PREFIX)
+    END_DATE_TOO_LATE = "{}END_DATE_TOO_LATE".format(PREFIX)
+    NOT_ADMIN = "{}NOT_ADMIN".format(PREFIX)
+    CAN_NOT_CREATE_AN_AUCTION_TWICE = "{}CAN_NOT_CREATE_AN_AUCTION_TWICE".format(PREFIX)
+    AUCTION_ID_SHOULD_BE_CONSECUTIVE = "{}AUCTION_ID_SHOULD_BE_CONSECUTIVE".format(PREFIX)
+    NOT_100 = "{}SHARES_MUST_SUM_UP_TO_100".format(PREFIX)
+    AUCTION_DOES_NOT_EXIST = "{}DOES_NOT_EXIST".format(PREFIX)
+
+INITIAL_BID = sp.mutez(900000)
+MINIMAL_BID = sp.mutez(100000)
+INITIAL_AUCTION_DURATION = sp.int(24*5) # 5 days
+MINIMAL_AUCTION_DURATION = sp.int(1) # 1 hour
+MAXIMAL_AUCTION_DURATION = sp.int(24*14) # 14 days
+AUCTION_EXTENSION_THRESHOLD = sp.int(60*5) # 5 minutes. Check whether we actually want this
+BID_STEP_THRESHOLD = sp.mutez(100000)
+
+class AuctionCreationParams():
     """ 
     The data-type class for creating a new auction
     """
@@ -331,7 +365,7 @@ class AuctionHouseContract(sp.Contract):
         Entry-Point for creating a new auction
         """
         sp.verify(sp.sender == self.data.administrator, AuctionErrorMessage.NOT_ADMIN) # only admin can create auction (nft needs to be minted for auction-contract)
-        sp.set_type_expr(create_auction_request, AuctionCreateRequest.get_type())
+        sp.set_type_expr(create_auction_request, AuctionCreationParams.get_type())
 
         sp.verify(~(create_auction_request.auction_and_token_id < self.data.all_auctions), message=AuctionErrorMessage.CAN_NOT_CREATE_AN_AUCTION_TWICE)
         sp.verify(self.data.all_auctions == create_auction_request.auction_and_token_id, message=AuctionErrorMessage.AUCTION_ID_SHOULD_BE_CONSECUTIVE)
@@ -403,7 +437,7 @@ class AuctionHouseContract(sp.Contract):
             voter_transaction = sp.local("voter_transaction", voter_reward.value * auction.voter_amount)
             blckbook_reward = sp.local("blckbook_reward", self.data.blckbook_share * percentage.value + percentage_remainder.value + remainder2.value)
 
-            voter_money_pool_contract = sp.contract(AuctionReward.get_type(), self.data.voter_money_pool, entry_point = "set_voter_rewards").open_some()
+            voter_money_pool_contract = sp.contract(SetAuctionRewardParams.get_type(), self.data.voter_money_pool, entry_point = "set_auction_rewards").open_some()
 
             sp.send(auction.uploader, sp.utils.nat_to_mutez(uploader_reward.value))
             sp.send(self.data.blckbook_collector, sp.utils.nat_to_mutez(blckbook_reward.value))
@@ -421,9 +455,9 @@ class AuctionHouseContract(sp.Contract):
 
         del self.data.auctions[auction_and_token_id] #this will delete the auction-entry (so we reduce the storage-diff)- otherwise make it so an auction can not be ended twice
 
-class AddVote():
+class AddVotesParams():
     """ 
-    The data-type class for adding votes on a specific artwork
+    The data-type class for adding votes to a single auction (and its corresponding token)
     """
     def get_type():
         return sp.TRecord(
@@ -438,9 +472,9 @@ class VoterMoneyPoolErrorMessage:
     NOT_A_VOTER = "{}NOT_A_VOTER".format(PREFIX)
     ALL_VOTES_ALREADY_PAYED_OUT = "{}ALL_VOTES_ALREADY_PAYED_OUT".format(PREFIX)
 
-class AuctionReward():
+class SetAuctionRewardParams():
     """ 
-    The data-type class for adding a reward in mutez 
+    The data-type class for setting the voter_rewards for a specific auction (and it's corresponding token)
     """
     def get_type():
         return sp.TRecord(
@@ -468,17 +502,17 @@ class VoterMoneyPoolContract(sp.Contract):
         self.data.administrator = params
 
     @sp.entry_point
-    def set_voter_rewards(self, params):
+    def set_auction_rewards(self, params):
         # maybe change this so a user can resolve the auction to check for sender = AuctionHouseContract
         sp.verify(sp.source == self.data.administrator, VoterMoneyPoolErrorMessage.NOT_ADMIN)
-        sp.set_type_expr(params, AuctionReward.get_type())
+        sp.set_type_expr(params, SetAuctionRewardParams.get_type())
         sp.verify(~self.data.auctions.contains(params.auction_and_token_id), VoterMoneyPoolErrorMessage.AUCTION_ALREADY_RESOLVED)
         self.data.auctions[params.auction_and_token_id] = params.reward
 
     @sp.entry_point
     def add_votes(self, votes):
         sp.verify(sp.sender == self.data.administrator) # only admin can create auction (nft needs to be minted for auction-contract)
-        sp.set_type_expr(votes, AddVote.get_type())
+        sp.set_type_expr(votes, AddVotesParams.get_type())
         sp.for vote in votes.voter_addresses:
             self.data.vote_map[vote] = sp.sp.cons(votes.auction_and_token_id, self.data.vote_map.get(vote, default_value = []))
 
@@ -499,28 +533,6 @@ class VoterMoneyPoolContract(sp.Contract):
             sp.send(sp.sender, sum.value)
         sp.else:
             sp.failwith(VoterMoneyPoolErrorMessage.ALL_VOTES_ALREADY_PAYED_OUT)
-
-class BatchTransfer():
-    """
-    Class for the transfer endpoint of the FA2-Token contract
-    """
-    def get_transfer_type():
-        tx_type = sp.TRecord(to_ = sp.TAddress,
-                             token_id = sp.TNat,
-                             amount = sp.TNat)
-        tx_type = tx_type.layout(
-            ("to_", ("token_id", "amount"))
-        )
-        transfer_type = sp.TRecord(from_ = sp.TAddress,
-                                   txs = sp.TList(tx_type)).layout(
-                                       ("from_", "txs"))
-        return transfer_type
-
-    def get_type():
-        return sp.TList(BatchTransfer.get_transfer_type())
-
-    def item(from_, txs):
-        return sp.set_type_expr(sp.record(from_ = from_, txs = txs), BatchTransfer.get_transfer_type())
 
 class TestHelper():
     def make_metadata(symbol, name, decimals):
@@ -692,6 +704,222 @@ def test():
 
     scenario.table_of_contents()
 
+@sp.add_test(name = "FA2-Contract Operator Test")
+def test():
+    scenario = sp.test_scenario()
+    scenario.h1("Operators FA2 Contract")
+    scenario.table_of_contents()
+    
+    admin = sp.test_account("Administrator")
+    alice = sp.test_account("Alice")
+    bob   = sp.test_account("Bob")
+    # Let's display the accounts:
+    scenario.h2("Accounts")
+    scenario.show([admin, alice, bob])
+    c1 = TokensContract(admin.address)
+
+    scenario += c1
+    
+    scenario.p("Calling 0 updates should work:")
+    c1.update_operators([]).run()
+    scenario.h3("Operator Accounts")
+    op0 = sp.test_account("Operator0")
+    op1 = sp.test_account("Operator1")
+    op2 = sp.test_account("Operator2")
+    scenario.show([op0, op1, op2])
+
+    tok1_md = TestHelper.make_metadata(
+        name = "Random Token",
+        decimals = 0,
+        symbol= "TK1")
+    c1.mint(address = alice.address,
+                        amount = 1,
+                        metadata = tok1_md,
+                        token_id = 0).run(sender = admin)
+
+    c1.mint(address = alice.address,
+                    amount = 1,
+                    metadata = tok1_md,
+                    token_id = 1).run(sender = admin)
+
+    scenario.p("Admin can change Alice's operator.")
+
+    scenario.p("Operator2 cannot transfer Alice's tokens")
+    c1.transfer(
+        [
+            BatchTransfer.item(from_ = alice.address,
+                                txs = [
+                                    sp.record(to_ = bob.address,
+                                              amount = 1,
+                                              token_id = 1)])
+        ]).run(sender = op2, valid = False)
+
+    c1.update_operators([
+        sp.variant("add_operator", Operator.make(
+            owner = alice.address,
+            operator = op1.address,
+            token_id = 0)),
+        sp.variant("add_operator", Operator.make(
+            owner = alice.address,
+            operator = op1.address,
+            token_id = 1))
+    ]).run(sender = admin)
+    scenario.p("Operator1 can now transfer Alice's tokens 0 and 2")
+    c1.transfer(
+        [
+            BatchTransfer.item(from_ = alice.address,
+                                    txs = [
+                                    sp.record(to_ = bob.address,
+                                              amount = 1,
+                                              token_id = 0),
+                                    sp.record(to_ = bob.address,
+                                              amount = 1,
+                                              token_id = 1)])
+        ]).run(sender = op1)
+    scenario.p("Operator1 cannot transfer Bob's tokens")
+    c1.transfer(
+        [
+            BatchTransfer.item(from_ = bob.address,
+                                txs = [
+                                    sp.record(to_ = op1.address,
+                                              amount = 1,
+                                              token_id = 1)])
+        ]).run(sender = op1, valid = False)
+    scenario.p("Alice can remove their operator")
+    c1.update_operators([
+        sp.variant("remove_operator", Operator.make(
+            owner = alice.address,
+            operator = op1.address,
+            token_id = 0)),
+        sp.variant("remove_operator", Operator.make(
+            owner = alice.address,
+            operator = op1.address,
+            token_id = 1))
+    ]).run(sender = alice)
+    scenario.p("Operator1 cannot transfer Alice's tokens any more")
+    c1.transfer(
+        [
+            BatchTransfer.item(from_ = alice.address,
+                                txs = [
+                                    sp.record(to_ = op1.address,
+                                              amount = 1,
+                                              token_id = 1)])
+        ]).run(sender = op1, valid = False)
+    c1.transfer(
+        [
+            BatchTransfer.item(from_ = alice.address,
+                                txs = [
+                                    sp.record(to_ = op1.address,
+                                              amount = 1,
+                                              token_id = 0)])
+        ]).run(sender = op1, valid = False)
+    scenario.p("Bob can add Operator0.")
+    c1.update_operators([
+        sp.variant("add_operator", Operator.make(
+            owner = bob.address,
+            operator = op0.address,
+            token_id = 0)),
+        sp.variant("add_operator", Operator.make(
+            owner = bob.address,
+            operator = op0.address,
+            token_id = 1))
+    ]).run(sender = bob)
+    scenario.p("Operator0 can transfer Bob's tokens '0' and '1'")
+    c1.transfer(
+        [
+            BatchTransfer.item(from_ = bob.address,
+                                txs = [
+                                    sp.record(to_ = alice.address,
+                                              amount = 1,
+                                              token_id = 0)]),
+            BatchTransfer.item(from_ = bob.address,
+                                txs = [
+                                    sp.record(to_ = alice.address,
+                                              amount = 1,
+                                              token_id = 1)])
+        ]).run(sender = op0)
+    scenario.p("Bob cannot add Operator0 for Alice's tokens.")
+    c1.update_operators([
+        sp.variant("add_operator", Operator.make(
+            owner = alice.address,
+            operator = op0.address,
+            token_id = 0
+        ))
+    ]).run(sender = bob, valid = False)
+    scenario.p("Alice can also add Operator0 for their tokens 0.")
+    c1.update_operators([
+        sp.variant("add_operator", Operator.make(
+            owner = alice.address,
+            operator = op0.address,
+            token_id = 0
+        )),
+        sp.variant("add_operator", Operator.make(
+            owner = alice.address,
+            operator = op0.address,
+            token_id = 1
+        ))
+    ]).run(sender = alice, valid = True)
+
+    scenario.p("Operator0 can now transfer Alice's 0-tokens.")
+    c1.transfer(
+        [
+            BatchTransfer.item(from_ = alice.address,
+                                txs = [
+                                    sp.record(to_ = bob.address,
+                                              amount = 1,
+                                              token_id = 0)]),
+        ]).run(sender = op0)
+
+    scenario.p("Operator0 can now transfer Bob's and Alice's tokens.")
+    c1.transfer(
+        [
+            BatchTransfer.item(from_ = bob.address,
+                                txs = [
+                                    sp.record(to_ = alice.address,
+                                              amount = 1,
+                                              token_id = 0)]),
+            BatchTransfer.item(from_ = alice.address,
+                                txs = [
+                                    sp.record(to_ = bob.address,
+                                              amount = 1,
+                                              token_id = 1)])
+        ]).run(sender = op0)
+    scenario.p("Bob adds Operator2 as second operator for 1-tokens.")
+    c1.update_operators([
+        sp.variant("add_operator", Operator.make(
+            owner = bob.address,
+            operator = op2.address,
+            token_id = 1
+        ))
+    ]).run(sender = bob, valid = True)
+    scenario.p("Operator0 and Operator2 can transfer Bob's 1-tokens.")
+    c1.transfer(
+        [
+            BatchTransfer.item(from_ = bob.address,
+                                txs = [
+                                    sp.record(to_ = alice.address,
+                                              amount = 1,
+                                              token_id = 1)])
+        ]).run(sender = op0)
+    c1.transfer(
+        [
+            BatchTransfer.item(from_ = alice.address,
+                                txs = [
+                                    sp.record(to_ = bob.address,
+                                              amount = 1,
+                                              token_id = 1)])
+        ]).run(sender = alice)
+    c1.transfer(
+        [
+            BatchTransfer.item(from_ = bob.address,
+                                txs = [
+                                    sp.record(to_ = alice.address,
+                                              amount = 1,
+                                              token_id = 1)])
+        ]).run(sender = op2)
+    scenario.table_of_contents()
+
+
 @sp.add_test(name = "Auction House Contract Test")
 def test():
     scenario = sp.test_scenario()
@@ -828,10 +1056,10 @@ def test():
     voter_money_pool.withdraw().run(sender=alice, valid=False)
 
     scenario.h3("Admin should be able to set voter rewards")
-    voter_money_pool.set_voter_rewards(auction_and_token_id=sp.nat(0), reward=sp.mutez(200)).run(sender=admin, amount=sp.mutez(400))
+    voter_money_pool.set_auction_rewards(auction_and_token_id=sp.nat(0), reward=sp.mutez(200)).run(sender=admin, amount=sp.mutez(400))
 
     scenario.h3("Admin should not be able to set voter rewards for the same auction twice")
-    voter_money_pool.set_voter_rewards(auction_and_token_id=sp.nat(0), reward=sp.mutez(200)).run(sender=admin, amount=sp.mutez(400), valid=False)
+    voter_money_pool.set_auction_rewards(auction_and_token_id=sp.nat(0), reward=sp.mutez(200)).run(sender=admin, amount=sp.mutez(400), valid=False)
 
     scenario.h3("Now Alice can withdraw")
     voter_money_pool.withdraw().run(sender=alice)
@@ -856,13 +1084,13 @@ def test():
     )).run(sender=admin)
 
     scenario.h3("Set voter rewards for auction 1")
-    voter_money_pool.set_voter_rewards(auction_and_token_id=sp.nat(1), reward=sp.mutez(300)).run(sender=admin, amount=sp.mutez(600))
+    voter_money_pool.set_auction_rewards(auction_and_token_id=sp.nat(1), reward=sp.mutez(300)).run(sender=admin, amount=sp.mutez(600))
     voter_money_pool.withdraw().run(sender=alice)
     scenario.h3("Alice can withdraw for auction 1")
     scenario.verify(voter_money_pool.balance  == sp.mutez(300))
 
     scenario.h3("Set voter rewards for auction 2")
-    voter_money_pool.set_voter_rewards(auction_and_token_id=sp.nat(2), reward=sp.mutez(400)).run(sender=admin, amount=sp.mutez(800))
+    voter_money_pool.set_auction_rewards(auction_and_token_id=sp.nat(2), reward=sp.mutez(400)).run(sender=admin, amount=sp.mutez(800))
     scenario.verify(voter_money_pool.balance  == sp.mutez(1100))
     scenario.h3("Now alice can withdraw for auction 2")
     voter_money_pool.withdraw().run(sender=alice)
