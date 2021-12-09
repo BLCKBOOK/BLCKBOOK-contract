@@ -191,7 +191,7 @@ class TokensContract(sp.Contract):
         sp.verify(self.data.ledger[user].balance == sp.nat(1), 'FA2_ADDRESS_DOES_NOT_HAVE_TOKEN_FOR_BURN')
         self.data.ledger[user].balance = sp.nat(0)
 
-    @sp.offchain_view(pure = True)
+    @sp.onchain_view(pure = True) 
     def get_balance(self, req):
         """This is the `get_balance` view defined in TZIP-12."""
         sp.set_type(
@@ -205,22 +205,22 @@ class TokensContract(sp.Contract):
         sp.verify(self.data.token_metadata.contains(req.token_id), message = 'FA2_TOKEN_UNDEFINED')
         sp.result(self.data.ledger[ledger_key].balance)
 
-    @sp.offchain_view(pure = True)
+    @sp.onchain_view(pure = True)
     def count_tokens(self):
         """Get how many tokens are in this FA2 contract."""
         sp.result(self.data.all_tokens)
 
-    @sp.offchain_view(pure = True)
+    @sp.onchain_view(pure = True)
     def does_token_exist(self, tok):
         "Ask whether a token ID is exists."
         sp.set_type(tok, sp.TNat)
         sp.result(self.data.token_metadata.contains(tok))
 
-    @sp.offchain_view(pure = True)
+    @sp.onchain_view(pure = True)
     def all_tokens(self):
         sp.result(sp.range(0, self.data.all_tokens))
 
-    @sp.offchain_view(pure = True)
+    @sp.onchain_view(pure = True)
     def is_operator(self, query):
         sp.set_type(query,
                     sp.TRecord(token_id = sp.TNat,
@@ -558,9 +558,9 @@ class VoterMoneyPoolContract(sp.Contract):
         sp.verify(sp.sender == self.data.administrator, VoterMoneyPoolErrorMessage.NOT_ADMIN)
         self.data.metadata[params.k] = params.v
 
-    @sp.offchain_view(pure = True)
+    @sp.onchain_view(pure = True)
     def get_balance(self, address):
-        """This offchain view calculates how much a voter will get from withdrawing"""
+        """This view calculates how much a voter will get from withdrawing"""
         sp.set_type(address, sp.TAddress)
         sum = sp.local("sum", sp.mutez(0))
         sp.if self.data.vote_map.contains(address):
