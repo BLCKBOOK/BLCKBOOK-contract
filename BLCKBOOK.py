@@ -1089,12 +1089,17 @@ def test():
     scenario.h3("Alice should not be able to withdraw before the reward gets set")
     voter_money_pool.withdraw().run(sender=alice, valid=False)
 
+    scenario.h3("test offchain-view get-balance is 0 for alice before setting the voter reward")
+    scenario.verify(voter_money_pool.get_balance(alice.address) == sp.mutez(0))
+
     scenario.h3("Admin should be able to set voter rewards")
     voter_money_pool.set_auction_rewards(auction_and_token_id=sp.nat(0), reward=sp.mutez(200)).run(sender=admin, amount=sp.mutez(400))
 
     scenario.h3("Admin should not be able to set voter rewards for the same auction twice")
     voter_money_pool.set_auction_rewards(auction_and_token_id=sp.nat(0), reward=sp.mutez(200)).run(sender=admin, amount=sp.mutez(400), valid=False)
 
+    scenario.h3("test offchain-view get-balance with amount")
+    scenario.verify(voter_money_pool.get_balance(alice.address) == sp.mutez(200))
     scenario.h3("Now Alice can withdraw")
     voter_money_pool.withdraw().run(sender=alice)
     scenario.verify(voter_money_pool.balance  == sp.mutez(200))
