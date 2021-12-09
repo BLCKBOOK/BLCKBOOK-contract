@@ -483,17 +483,36 @@ class SetAuctionRewardParams():
 
 class VoterMoneyPoolContract(sp.Contract):
     def __init__(self, administrator):
+        list_of_views = [
+            self.get_balance
+        ]
+
+        metadata = {
+            "name": "BLCKBOOK-VoterMoneyPool",
+            "description": "BLCKBOOK beta implementation of a VoterMoneyPool",
+            "views": list_of_views,
+            "authors": ["Niels Hanselmann"], 
+            "homepage": "https://blckbook.vote",
+            "source": {"tools": ["SmartPy"], "location": "https://github.com/BLCKBOOK/BLCKBOOK-contract"},
+        }
+
+        # Helper method that builds the metadata and produces the JSON representation as an artifact.
+        self.init_metadata("VoterMoneyPoolContract", metadata) #the string is just for the output of the online-IDE
+
+
         sp.set_type_expr(administrator, sp.TAddress)
         self.init_type(sp.TRecord(
                 administrator = sp.TAddress,
                 auctions = sp.TBigMap(sp.TNat, sp.TMutez),
                 vote_map = sp.TBigMap(sp.TAddress, sp.TList(sp.TNat)),
-        ).layout(("administrator", ("auctions", "vote_map"))))
+                metadata = sp.TBigMap(sp.TString, sp.TBytes),
+        ).layout(("administrator", ("auctions", ("vote_map", "metadata")))))
 
         self.init(
             administrator = administrator,
             auctions=sp.big_map(tkey=sp.TNat, tvalue = sp.TMutez),        
             vote_map = sp.big_map(tkey=sp.TAddress, tvalue=sp.TList(sp.TNat)),
+            metadata = sp.big_map(tkey = sp.TString, tvalue = sp.TBytes),
         )   
      
     @sp.entry_point
@@ -511,7 +530,7 @@ class VoterMoneyPoolContract(sp.Contract):
 
     @sp.entry_point
     def add_votes(self, votes):
-        sp.verify(sp.sender == self.data.administrator) # only admin can create auction (nft needs to be minted for auction-contract)
+        sp.verify(sp.sender == self.data.administrator, VoterMoneyPoolErrorMessage.NOT_ADMIN) # only admin can create auction (nft needs to be minted for auction-contract)
         sp.set_type_expr(votes, AddVotesParams.get_type())
         sp.for vote in votes.voter_addresses:
             self.data.vote_map[vote] = sp.sp.cons(votes.auction_and_token_id, self.data.vote_map.get(vote, default_value = []))
@@ -533,6 +552,21 @@ class VoterMoneyPoolContract(sp.Contract):
             sp.send(sp.sender, sum.value)
         sp.else:
             sp.failwith(VoterMoneyPoolErrorMessage.ALL_VOTES_ALREADY_PAYED_OUT)
+
+    @sp.entry_point
+    def set_metadata(self, params):
+        sp.verify(sp.sender == self.data.administrator, VoterMoneyPoolErrorMessage.NOT_ADMIN)
+        self.data.metadata[params.k] = params.v
+
+    @sp.offchain_view(pure = True)
+    def get_balance(self, address):
+        """This offchain view calculates how much a voter will get from withdrawing"""
+        sp.set_type(address, sp.TAddress)
+        sum = sp.local("sum", sp.mutez(0))
+        sp.for auction in self.data.vote_map[address]:
+            sp.if self.data.auctions.contains(auction):
+                sum.value = sum.value + self.data.auctions[auction]
+        sp.result(sum.value)
 
 class TestHelper():
     def make_metadata(symbol, name, decimals):
@@ -1215,3 +1249,15 @@ def test():
     scenario.verify(voter_money_pool.balance == sp.mutez(150000))
     voter_money_pool.withdraw().run(sender=dan)
     scenario.verify(voter_money_pool.balance == sp.mutez(0))
+
+@sp.add_test(name = "For Origination")
+def test():
+    scenario = sp.test_scenario()
+    scenario.h1("For origination")
+    scenario.table_of_contents()
+
+    fa2 = TokensContract(sp.address("tz1PEbaFp9jE6syH5xg29YRegbwLLehzK3w2"))
+    scenario += fa2
+
+    voter_money_pool = VoterMoneyPoolContract(sp.address("tz1PEbaFp9jE6syH5xg29YRegbwLLehzK3w2"))
+    scenario += voter_money_pool
