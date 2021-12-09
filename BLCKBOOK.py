@@ -1261,12 +1261,20 @@ def test():
 
 @sp.add_test(name = "For Origination")
 def test():
+
+    admin_address = sp.address("tz1PEbaFp9jE6syH5xg29YRegbwLLehzK3w2")
     scenario = sp.test_scenario()
     scenario.h1("For origination")
     scenario.table_of_contents()
 
-    fa2 = TokensContract(sp.address("tz1PEbaFp9jE6syH5xg29YRegbwLLehzK3w2"))
+    fa2 = TokensContract(admin_address)
     scenario += fa2
 
-    voter_money_pool = VoterMoneyPoolContract(sp.address("tz1PEbaFp9jE6syH5xg29YRegbwLLehzK3w2"))
+    voter_money_pool = VoterMoneyPoolContract(admin_address)
     scenario += voter_money_pool
+
+    auction_house = AuctionHouseContract(administrator=admin_address, 
+        voter_money_pool = sp.address('KT1Qs5B5b2eo6TqqhEJ3LNzBRSoQahEQK4tZ'), 
+        blckbook_collector = admin_address,
+        tokens_contract_address = sp.address('KT1HAtdXKvXqK2He3Xr2xmHQ9cYrxPTL7X9Z'))
+    scenario += auction_house
