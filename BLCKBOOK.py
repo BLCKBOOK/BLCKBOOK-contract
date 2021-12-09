@@ -540,9 +540,11 @@ class VoterMoneyPoolContract(sp.Contract):
         sp.verify(self.data.vote_map.contains(sp.sender), VoterMoneyPoolErrorMessage.NOT_A_VOTER)
         sum = sp.local("sum", sp.mutez(0))
         not_resolved_yet = sp.local('not_resolved_yet', sp.list([], t = sp.TNat))
+        already_resolved = sp.local('already_resolved', sp.set({}, t = sp.TNat))
         sp.for auction in self.data.vote_map[sp.sender]:
-            sp.if self.data.auctions.contains(auction):
+            sp.if self.data.auctions.contains(auction) & ~(already_resolved.value.contains(auction)):
                 sum.value = sum.value + self.data.auctions[auction]
+                already_resolved.value.add(auction)
             sp.else:
                 not_resolved_yet.value.push(auction)
         
@@ -563,10 +565,12 @@ class VoterMoneyPoolContract(sp.Contract):
         """This view calculates how much a voter will get from withdrawing"""
         sp.set_type(address, sp.TAddress)
         sum = sp.local("sum", sp.mutez(0))
+        already_resolved = sp.local('already_resolved', sp.set({}, t = sp.TNat))
         sp.if self.data.vote_map.contains(address):
             sp.for auction in self.data.vote_map[address]:
-                sp.if self.data.auctions.contains(auction):
+                sp.if self.data.auctions.contains(auction) & ~(already_resolved.value.contains(auction)):
                     sum.value = sum.value + self.data.auctions[auction]
+                    already_resolved.value.add(auction)
         sp.result(sum.value)
 
 class TestHelper():
@@ -1144,6 +1148,29 @@ def test():
 
     scenario.h3("Alice should not be able to withdraw again when no auction is pending")
     voter_money_pool.withdraw().run(sender=alice, valid=False)
+
+
+    scenario.h1("Check what happens when the admin messes up and enters wrong data")
+    scenario.h3("So we add the same voters twice")
+    voter_money_pool.add_votes(sp.record(
+        voter_addresses=[alice.address, bob.address], 
+        auction_and_token_id=sp.nat(5),
+    )).run(sender=admin)
+
+    voter_money_pool.add_votes(sp.record( 
+        voter_addresses=[alice.address, bob.address], 
+        auction_and_token_id=sp.nat(5),
+    )).run(sender=admin)
+
+    scenario.h3("Now we resolve the vote_pool")
+    voter_money_pool.set_auction_rewards(auction_and_token_id=sp.nat(5), reward=sp.mutez(400)).run(sender=admin, amount=sp.mutez(800))
+    
+    scenario.h3("And the withdrawls (including the view) should return the right values and not count something twice")
+    scenario.verify(voter_money_pool.get_balance(alice.address) == sp.mutez(400)) 
+    voter_money_pool.withdraw().run(sender=alice, valid=True)
+    scenario.verify(voter_money_pool.balance  == sp.mutez(400))
+    voter_money_pool.withdraw().run(sender=bob, valid=True)
+    scenario.verify(voter_money_pool.balance  == sp.mutez(0))
 
 @sp.add_test(name = "Integration Tests")
 def test():
