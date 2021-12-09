@@ -563,9 +563,10 @@ class VoterMoneyPoolContract(sp.Contract):
         """This offchain view calculates how much a voter will get from withdrawing"""
         sp.set_type(address, sp.TAddress)
         sum = sp.local("sum", sp.mutez(0))
-        sp.for auction in self.data.vote_map[address]:
-            sp.if self.data.auctions.contains(auction):
-                sum.value = sum.value + self.data.auctions[auction]
+        sp.if self.data.vote_map.contains(address):
+            sp.for auction in self.data.vote_map[address]:
+                sp.if self.data.auctions.contains(auction):
+                    sum.value = sum.value + self.data.auctions[auction]
         sp.result(sum.value)
 
 class TestHelper():
@@ -1080,6 +1081,9 @@ def test():
 
     scenario.h3("Alice should not be able to withdraw before a vote for her is set")
     voter_money_pool.withdraw().run(sender=alice, valid=False)
+
+    scenario.h3("test offchain-view get-balance when the voter has not voted for anything")
+    scenario.verify(voter_money_pool.get_balance(alice.address) == sp.mutez(0))
     
     voter_money_pool.add_votes(sp.record(
             voter_addresses=[alice.address, bob.address], 
