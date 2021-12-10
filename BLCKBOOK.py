@@ -251,7 +251,6 @@ class AuctionErrorMessage:
 
 INITIAL_BID = sp.mutez(900000)
 MINIMAL_BID = sp.mutez(100000)
-INITIAL_AUCTION_DURATION = sp.int(24*5) # 5 days
 MINIMAL_AUCTION_DURATION = sp.int(1) # 1 hour
 MAXIMAL_AUCTION_DURATION = sp.int(24*14) # 14 days
 AUCTION_EXTENSION_THRESHOLD = sp.int(60*5) # 5 minutes. Check whether we actually want this
