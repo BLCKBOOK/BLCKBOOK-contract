@@ -54,7 +54,7 @@ class TokensContract(sp.Contract):
             "version": "FA2",
             "views": list_of_views,
             "interfaces": ["TZIP-012", "TZIP-016"],
-            "authors": ["Niels Hanselmann"], 
+            "authors": ["Niels Hanselmann", "Simon Schiebler"], 
             "homepage": "https://blckbook.vote",
             "source": {"tools": ["SmartPy"], "location": "https://github.com/BLCKBOOK/BLCKBOOK-contract"},
             "permissions": {
@@ -288,6 +288,22 @@ class AuctionHouseContract(sp.Contract):
     The smart contract for the actual Auction-House
     """
     def __init__(self, administrator, blckbook_collector, voter_money_pool, tokens_contract_address):
+
+        list_of_views = [
+            self.get_expired_auctions
+        ]
+
+        metadata = {
+            "name": "BLCKBOOK-Auction-House",
+            "description": "BLCKBOOK beta implementation of the Auction-House",
+            "views": list_of_views,
+            "authors": ["Niels Hanselmann", "Simon Schiebler"], 
+            "homepage": "https://blckbook.vote",
+            "source": {"tools": ["SmartPy"], "location": "https://github.com/BLCKBOOK/BLCKBOOK-contract"},
+        }
+
+        self.init_metadata("AuctionHouseContract", metadata)
+
         sp.set_type_expr(administrator, sp.TAddress)
         sp.set_type_expr(blckbook_collector, sp.TAddress)
         sp.set_type_expr(voter_money_pool, sp.TAddress)
@@ -302,7 +318,8 @@ class AuctionHouseContract(sp.Contract):
                 voter_share=sp.TNat,
                 auctions = sp.TBigMap(sp.TNat, Auction.get_type()),
                 all_auctions = sp.TNat,
-        ).layout(("administrator", ("blckbook_collector", ("voter_money_pool", ("tokens_contract_address", ("blckbook_share", ("uploader_share", ("voter_share", ("all_auctions", "auctions"))))))))))
+                metadata = sp.TBigMap(sp.TString, sp.TBytes),
+        ).layout(("administrator", ("blckbook_collector", ("voter_money_pool", ("tokens_contract_address", ("blckbook_share", ("uploader_share", ("voter_share", ("all_auctions", ("auctions", "metadata")))))))))))
 
         self.init(blckbook_share = sp.nat(25),
                     voter_share = sp.nat(15),
@@ -312,6 +329,7 @@ class AuctionHouseContract(sp.Contract):
                     administrator = administrator,
                     tokens_contract_address = tokens_contract_address,
                     voter_money_pool = voter_money_pool,
+                    metadata = sp.big_map(tkey = sp.TString, tvalue = sp.TBytes),
                     all_auctions= sp.nat(0))
      
 
@@ -414,6 +432,11 @@ class AuctionHouseContract(sp.Contract):
         self.data.auctions[auction_and_token_id] = auction
 
     @sp.entry_point
+    def set_metadata(self, params):
+        sp.verify(sp.sender == self.data.administrator, VoterMoneyPoolErrorMessage.NOT_ADMIN)
+        self.data.metadata[params.k] = params.v
+
+    @sp.entry_point
     def end_auction(self, auction_and_token_id):
         """ 
         Entry-Point for ending an auction. Can actually only be done by the admin because we this calls the voter_money_pool
@@ -454,6 +477,17 @@ class AuctionHouseContract(sp.Contract):
 
         del self.data.auctions[auction_and_token_id] #this will delete the auction-entry (so we reduce the storage-diff)- otherwise make it so an auction can not be ended twice
 
+    @sp.onchain_view(pure = True)
+    def get_expired_auctions(self, timestamp):
+        sp.set_type_expr(timestamp, sp.TTimestamp)
+        i = sp.local('i', sp.nat(0))
+        expired_auctions = sp.local('expired_auctions', sp.list([], t = sp.TNat))
+        sp.while i.value < self.data.all_auctions:
+            sp.if self.data.auctions.contains(i.value) & (timestamp > self.data.auctions[i.value].end_timestamp):
+                expired_auctions.value.push(i.value)
+            i.value += 1
+        sp.result(expired_auctions.value)
+
 class AddVotesParams():
     """ 
     The data-type class for adding votes to a single auction (and its corresponding token)
@@ -490,7 +524,7 @@ class VoterMoneyPoolContract(sp.Contract):
             "name": "BLCKBOOK-VoterMoneyPool",
             "description": "BLCKBOOK beta implementation of a VoterMoneyPool",
             "views": list_of_views,
-            "authors": ["Niels Hanselmann"], 
+            "authors": ["Niels Hanselmann", "Simon Schiebler"], 
             "homepage": "https://blckbook.vote",
             "source": {"tools": ["SmartPy"], "location": "https://github.com/BLCKBOOK/BLCKBOOK-contract"},
         }
@@ -987,6 +1021,9 @@ def test():
         tokens_contract_address = fa2.address)
     scenario += auction_house
 
+    scenario.h2("View should return an empty array for an empty contract")
+    scenario.show(auction_house.get_expired_auctions(sp.timestamp(0).add_minutes(1)))
+
     scenario.h2("Check that we dont leave money in the auction-contract")
 
     tok0_md = TestHelper.make_metadata(
@@ -1006,6 +1043,9 @@ def test():
         bid_amount=sp.mutez(1000000),
     ).run(sender=admin)
 
+    scenario.h3("View is still empty")
+    scenario.show(auction_house.get_expired_auctions(sp.timestamp(0).add_minutes(1)))
+
     scenario.h3("Bob bids")
     scenario += auction_house.bid(0).run(sender=bob,amount=sp.mutez(2000000), now=sp.timestamp(0).add_minutes(1))
 
@@ -1018,6 +1058,8 @@ def test():
     scenario.h3("Bob rebids")
     scenario += auction_house.bid(0).run(sender=bob,amount=sp.mutez(401001327), now=sp.timestamp(0).add_minutes(4))
 
+    scenario.h3("View is still empty")
+    scenario.show(auction_house.get_expired_auctions(sp.timestamp(0).add_minutes(5)))
     scenario.h3("Admin can not end a running auction")
     scenario += auction_house.end_auction(0).run(sender=admin, amount=sp.mutez(0), now=sp.timestamp(0).add_minutes(8), valid=False)
 
@@ -1027,9 +1069,14 @@ def test():
     scenario.h2("Try to bid on auctions, that is over")
     scenario += auction_house.bid(0).run(sender=dan, amount=sp.mutez(501001327), now=sp.timestamp(0).add_minutes(5).add_days(7), valid=False)
 
+    scenario.h3("View is not empty anymore")
+    scenario.show(auction_house.get_expired_auctions(sp.timestamp(0).add_minutes(5).add_days(7)))
+    
     scenario.h2("Admin ends auction")
     scenario += auction_house.end_auction(0).run(sender=admin, amount=sp.mutez(0), now=sp.timestamp(0).add_minutes(5).add_days(7))
 
+    scenario.h3("View is not empty again")
+    scenario.show(auction_house.get_expired_auctions(sp.timestamp(0).add_minutes(7).add_days(7)))
     scenario.h2("Admin can not end an auction twice")
     scenario += auction_house.end_auction(0).run(sender=admin, amount=sp.mutez(0), now=sp.timestamp(0).add_minutes(5).add_days(7), valid=False)
 
@@ -1227,8 +1274,14 @@ def test():
         auction_and_token_id=sp.nat(0),
     )).run(sender=admin)
 
+    scenario.h3("View is not empty")
+    scenario.show(auction_house.get_expired_auctions(sp.timestamp(0).add_minutes(5).add_days(7)))
+
     scenario.h3("end the auction before anyone has bid on it")
     scenario += auction_house.end_auction(0).run(sender=admin, amount=sp.mutez(0), now=sp.timestamp(0).add_minutes(5).add_days(7))
+
+    scenario.h3("View is empty")
+    scenario.show(auction_house.get_expired_auctions(sp.timestamp(0).add_minutes(6).add_days(7)))
 
     scenario.h3("transfer the item to bob from alice so we can see that she actually got it")
     fa2.transfer(
@@ -1272,9 +1325,15 @@ def test():
     scenario.h3("dan bids")
     scenario += auction_house.bid(1).run(sender=dan,amount=sp.mutez(3000000), now=sp.timestamp(0).add_minutes(1))
 
+    scenario.h3("View has 1 in it")
+    scenario.show(auction_house.get_expired_auctions(sp.timestamp(0).add_minutes(4).add_days(14)))
+
     scenario.h3("end the auction")
     scenario += auction_house.end_auction(1).run(sender=admin, amount=sp.mutez(0), now=sp.timestamp(0).add_minutes(5).add_days(14))
     
+    scenario.h3("View is empty again")
+    scenario.show(auction_house.get_expired_auctions(sp.timestamp(0).add_minutes(6).add_days(14)))
+
     scenario.verify(auction_house.balance  == sp.mutez(0))
 
     scenario.verify(voter_money_pool.balance == sp.mutez(450000))
@@ -1300,7 +1359,7 @@ def test():
     scenario += voter_money_pool
 
     auction_house = AuctionHouseContract(administrator=admin_address, 
-        voter_money_pool = sp.address('KT1Qs5B5b2eo6TqqhEJ3LNzBRSoQahEQK4tZ'), 
+        voter_money_pool = sp.address('KT1XeA6tZYeBCm7aux3SAPswTuRE72R3VUCW'), 
         blckbook_collector = admin_address,
         tokens_contract_address = sp.address('KT1HAtdXKvXqK2He3Xr2xmHQ9cYrxPTL7X9Z'))
     scenario += auction_house
