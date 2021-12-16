@@ -566,7 +566,7 @@ class VoterMoneyPoolContract(sp.Contract):
         sp.verify(sp.sender == self.data.administrator, VoterMoneyPoolErrorMessage.NOT_ADMIN) # only admin can create auction (nft needs to be minted for auction-contract)
         sp.set_type_expr(votes, AddVotesParams.get_type())
         sp.for vote in votes.voter_addresses:
-            self.data.vote_map[vote] = sp.sp.cons(votes.auction_and_token_id, self.data.vote_map.get(vote, default_value = []))
+            self.data.vote_map[vote] = sp.cons(votes.auction_and_token_id, self.data.vote_map.get(vote, default_value = []))
 
     @sp.entry_point
     def withdraw(self):
