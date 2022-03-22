@@ -54,7 +54,7 @@ class TokensContract(sp.Contract):
             "version": "FA2",
             "views": list_of_views,
             "interfaces": ["TZIP-012", "TZIP-016"],
-            "authors": ["Niels Hanselmann", "Simon Schiebler"], 
+            "authors": ["Niels Hanselmann", "Simon Schiebler"],
             "homepage": "https://blckbook.vote",
             "source": {"tools": ["SmartPy"], "location": "https://github.com/BLCKBOOK/BLCKBOOK-contract"},
             "permissions": {
@@ -68,8 +68,8 @@ class TokensContract(sp.Contract):
         self.init_metadata("BLCKBOOK-FA2", metadata) #the string is just for the output of the online-IDE
 
         self.init_type(sp.TRecord(
-                administrator = sp.TAddress, 
-                all_tokens = sp.TNat, 
+                administrator = sp.TAddress,
+                all_tokens = sp.TNat,
                 ledger = sp.TBigMap(sp.TPair(sp.TAddress, sp.TNat), sp.TRecord(balance = sp.TNat).layout("balance")),
                 metadata = sp.TBigMap(sp.TString, sp.TBytes),
                 operators = sp.TBigMap(Operator.get_type(), sp.TUnit),
@@ -95,18 +95,18 @@ class TokensContract(sp.Contract):
     def balance_of(self, params):
         sp.verify(~ self.data.paused, 'FA2_PAUSED')
         sp.set_type(params, sp.TRecord(callback = sp.TContract(sp.TList(sp.TRecord(balance = sp.TNat, request = sp.TRecord(owner = sp.TAddress, token_id = sp.TNat)
-        .layout(("owner", "token_id"))).layout(("request", "balance")))), 
+        .layout(("owner", "token_id"))).layout(("request", "balance")))),
         requests = sp.TList(sp.TRecord(owner = sp.TAddress, token_id = sp.TNat).layout(("owner", "token_id")))).layout(("requests", "callback")))
         def f_x0(_x0):
             sp.verify(self.data.token_metadata.contains(_x0.token_id), 'FA2_TOKEN_UNDEFINED')
             sp.if self.data.ledger.contains((sp.set_type_expr(_x0.owner, sp.TAddress), sp.set_type_expr(_x0.token_id, sp.TNat))):
-                sp.result(sp.record(request = sp.record(owner = sp.set_type_expr(_x0.owner, sp.TAddress), token_id = 
+                sp.result(sp.record(request = sp.record(owner = sp.set_type_expr(_x0.owner, sp.TAddress), token_id =
                     sp.set_type_expr(_x0.token_id, sp.TNat)), balance = self.data.ledger[(sp.set_type_expr(_x0.owner, sp.TAddress), sp.set_type_expr(_x0.token_id, sp.TNat))].balance))
             sp.else:
-                sp.result(sp.record(request = sp.record(owner = sp.set_type_expr(_x0.owner, sp.TAddress), token_id = 
+                sp.result(sp.record(request = sp.record(owner = sp.set_type_expr(_x0.owner, sp.TAddress), token_id =
                     sp.set_type_expr(_x0.token_id, sp.TNat)), balance = 0))
         responses = sp.local("responses", params.requests.map(sp.build_lambda(f_x0)))
-        sp.transfer(responses.value, sp.tez(0), sp.set_type_expr(params.callback, 
+        sp.transfer(responses.value, sp.tez(0), sp.set_type_expr(params.callback,
         sp.TContract(sp.TList(sp.TRecord(balance = sp.TNat, request = sp.TRecord(owner = sp.TAddress, token_id = sp.TNat)
         .layout(("owner", "token_id"))).layout(("request", "balance"))))))
 
@@ -115,7 +115,7 @@ class TokensContract(sp.Contract):
         sp.verify(sp.sender == self.data.administrator, 'FA2_NOT_ADMIN')
         sp.verify(params.amount == 1, 'NFT-asset: amount <> 1')
         sp.verify(~ (params.token_id < self.data.all_tokens), 'NFT-asset: cannot mint the same token twice')
-        self.data.ledger[(sp.set_type_expr(params.address, sp.TAddress), 
+        self.data.ledger[(sp.set_type_expr(params.address, sp.TAddress),
             sp.set_type_expr(params.token_id, sp.TNat))] = sp.record(balance = params.amount)
         sp.if ~ (params.token_id < self.data.all_tokens):
             sp.verify(self.data.all_tokens == params.token_id, 'Token-IDs should be consecutive')
@@ -154,7 +154,7 @@ class TokensContract(sp.Contract):
                     sp.if self.data.ledger.contains((sp.set_type_expr(tx.to_, sp.TAddress), sp.set_type_expr(tx.token_id, sp.TNat))):
                         self.data.ledger[(sp.set_type_expr(tx.to_, sp.TAddress), sp.set_type_expr(tx.token_id, sp.TNat))].balance += tx.amount
                     sp.else:
-                        self.data.ledger[(sp.set_type_expr(tx.to_, sp.TAddress), 
+                        self.data.ledger[(sp.set_type_expr(tx.to_, sp.TAddress),
                             sp.set_type_expr(tx.token_id, sp.TNat))] = sp.record(balance = tx.amount)
 
     @sp.entry_point
@@ -166,13 +166,13 @@ class TokensContract(sp.Contract):
             with update.match_cases() as arg:
                 with arg.match('add_operator') as add_operator:
                     sp.verify((add_operator.owner == sp.sender) | (sp.sender == self.data.administrator), 'FA2_NOT_ADMIN_OR_OPERATOR')
-                    self.data.operators[sp.set_type_expr(sp.record(owner = add_operator.owner, operator = add_operator.operator, token_id = 
+                    self.data.operators[sp.set_type_expr(sp.record(owner = add_operator.owner, operator = add_operator.operator, token_id =
                     add_operator.token_id), sp.TRecord(operator = sp.TAddress, owner = sp.TAddress, token_id = sp.TNat)
                     .layout(("owner", ("operator", "token_id"))))] = sp.unit
                 with arg.match('remove_operator') as remove_operator:
                     sp.verify((remove_operator.owner == sp.sender) | (sp.sender == self.data.administrator), 'FA2_NOT_ADMIN_OR_OPERATOR')
-                    del self.data.operators[sp.set_type_expr(sp.record(owner = remove_operator.owner, operator = 
-                    remove_operator.operator, token_id = remove_operator.token_id), 
+                    del self.data.operators[sp.set_type_expr(sp.record(owner = remove_operator.owner, operator =
+                    remove_operator.operator, token_id = remove_operator.token_id),
                     sp.TRecord(operator = sp.TAddress, owner = sp.TAddress, token_id = sp.TNat).layout(("owner", ("operator", "token_id"))))]
 
     @sp.entry_point
@@ -191,7 +191,7 @@ class TokensContract(sp.Contract):
         sp.verify(self.data.ledger[user].balance == sp.nat(1), 'FA2_ADDRESS_DOES_NOT_HAVE_TOKEN_FOR_BURN')
         self.data.ledger[user].balance = sp.nat(0)
 
-    @sp.onchain_view(pure = True) 
+    @sp.onchain_view(pure = True)
     def get_balance(self, req):
         """This is the `get_balance` view defined in TZIP-12."""
         sp.set_type(
@@ -257,20 +257,20 @@ AUCTION_EXTENSION_THRESHOLD = sp.int(60*5) # 5 minutes. Check whether we actuall
 BID_STEP_THRESHOLD = sp.mutez(100000)
 
 class AuctionCreationParams():
-    """ 
+    """
     The data-type class for creating a new auction
     """
     def get_type():
         return sp.TRecord(
         auction_and_token_id=sp.TNat,
-        end_timestamp=sp.TTimestamp,  
+        end_timestamp=sp.TTimestamp,
         voter_amount=sp.TNat,
         uploader=sp.TAddress,
         bid_amount=sp.TMutez,
         ).layout(("auction_and_token",("end_timestamp",("voter_amount",("uploader","bid_amount")))))
 
 class Auction():
-    """ 
+    """
     The data-type class for a single auction contained in the auction-house-contract
     """
     def get_type():
@@ -284,7 +284,7 @@ class Auction():
 
 
 class AuctionHouseContract(sp.Contract):
-    """ 
+    """
     The smart contract for the actual Auction-House
     """
     def __init__(self, administrator, blckbook_collector, voter_money_pool, tokens_contract_address):
@@ -297,7 +297,7 @@ class AuctionHouseContract(sp.Contract):
             "name": "BLCKBOOK-Auction-House",
             "description": "BLCKBOOK beta implementation of the Auction-House",
             "views": list_of_views,
-            "authors": ["Niels Hanselmann", "Simon Schiebler"], 
+            "authors": ["Niels Hanselmann", "Simon Schiebler"],
             "homepage": "https://blckbook.vote",
             "source": {"tools": ["SmartPy"], "location": "https://github.com/BLCKBOOK/BLCKBOOK-contract"},
         }
@@ -331,7 +331,7 @@ class AuctionHouseContract(sp.Contract):
                     voter_money_pool = voter_money_pool,
                     metadata = sp.big_map(tkey = sp.TString, tvalue = sp.TBytes),
                     all_auctions= sp.nat(0))
-     
+
 
     @sp.entry_point
     def set_administrator(self, params):
@@ -340,7 +340,7 @@ class AuctionHouseContract(sp.Contract):
 
     @sp.entry_point
     def set_tokens_contract_address(self, params):
-        """ 
+        """
         Entry-Point for setting the FA2-Contract Address
         """
         sp.verify(sp.sender == self.data.administrator, AuctionErrorMessage.NOT_ADMIN)
@@ -348,15 +348,15 @@ class AuctionHouseContract(sp.Contract):
 
     @sp.entry_point
     def set_blckbook_collector(self, params):
-        """ 
+        """
         Entry-Point for setting the address of the blckbook_collector which will get the blckbook share of the auction-prices
         """
         sp.verify(sp.sender == self.data.administrator, AuctionErrorMessage.NOT_ADMIN)
         self.data.blckbook_collector = params
-    
+
     @sp.entry_point
     def set_voter_money_pool_address(self, params):
-        """ 
+        """
         Entry-Point for setting the address of the voter_money_pool which will get the shares for the voters and will get called with the info how much every voter gets
         """
         sp.verify(sp.sender == self.data.administrator, AuctionErrorMessage.NOT_ADMIN)
@@ -364,7 +364,7 @@ class AuctionHouseContract(sp.Contract):
 
     @sp.entry_point
     def set_shares(self, blckbook_share, uploader_share, voter_share):
-        """ 
+        """
         Entry-Point for setting the share percentages of the auction-price
         """
         sp.verify(sp.sender == self.data.administrator, AuctionErrorMessage.NOT_ADMIN)
@@ -378,7 +378,7 @@ class AuctionHouseContract(sp.Contract):
 
     @sp.entry_point
     def create_auction(self, create_auction_request):
-        """ 
+        """
         Entry-Point for creating a new auction
         """
         sp.verify(sp.sender == self.data.administrator, AuctionErrorMessage.NOT_ADMIN) # only admin can create auction (nft needs to be minted for auction-contract)
@@ -395,17 +395,17 @@ class AuctionHouseContract(sp.Contract):
         #set the actual auction in the auctions
         self.data.auctions[create_auction_request.auction_and_token_id] = sp.record(
         end_timestamp=create_auction_request.end_timestamp,
-        uploader=create_auction_request.uploader, 
+        uploader=create_auction_request.uploader,
         bid_amount=create_auction_request.bid_amount,
         voter_amount=create_auction_request.voter_amount,
         bidder=create_auction_request.uploader)
-        
+
         #and increase the auction_and_token_id counter
         self.data.all_auctions = create_auction_request.auction_and_token_id + 1
 
     @sp.entry_point
     def bid(self, auction_and_token_id):
-        """ 
+        """
         Entry-Point for bidding on an auction (will be called by the users)
         """
         sp.set_type_expr(auction_and_token_id, sp.TNat)
@@ -417,15 +417,15 @@ class AuctionHouseContract(sp.Contract):
         sp.verify(sp.now < auction.end_timestamp, message = AuctionErrorMessage.AUCTION_IS_OVER)
 
         #do not send the initial amount to the uploader because we just use this as a minimal amount for the auction
-        sp.if auction.bidder != auction.uploader: 
+        sp.if auction.bidder != auction.uploader:
             sp.send(auction.bidder, auction.bid_amount)
             # otherwise we transfer the previous bid_amount to the previous highest bidder
 
         auction.bidder = sp.sender
         auction.bid_amount = sp.amount
-        
+
         #This will extend an auction-timeframe if an auction is bid on in the last 5 minutes. Which is common practice in tezos auctions
-        
+
         sp.if auction.end_timestamp-sp.now < AUCTION_EXTENSION_THRESHOLD:
             auction.end_timestamp = sp.now.add_seconds(AUCTION_EXTENSION_THRESHOLD)
 
@@ -438,7 +438,7 @@ class AuctionHouseContract(sp.Contract):
 
     @sp.entry_point
     def end_auction(self, auction_and_token_id):
-        """ 
+        """
         Entry-Point for ending an auction. Can actually only be done by the admin because we this calls the voter_money_pool
         """
         sp.set_type_expr(auction_and_token_id, sp.TNat)
@@ -464,7 +464,7 @@ class AuctionHouseContract(sp.Contract):
             sp.send(auction.uploader, sp.utils.nat_to_mutez(uploader_reward.value))
             sp.send(self.data.blckbook_collector, sp.utils.nat_to_mutez(blckbook_reward.value))
             sp.transfer(
-                sp.record(auction_and_token_id = auction_and_token_id, reward=sp.utils.nat_to_mutez(voter_reward.value)), 
+                sp.record(auction_and_token_id = auction_and_token_id, reward=sp.utils.nat_to_mutez(voter_reward.value)),
                 sp.utils.nat_to_mutez(voter_transaction.value),
                 voter_money_pool_contract,
             )
@@ -489,12 +489,12 @@ class AuctionHouseContract(sp.Contract):
         sp.result(expired_auctions.value)
 
 class AddVotesParams():
-    """ 
+    """
     The data-type class for adding votes to a single auction (and its corresponding token)
     """
     def get_type():
         return sp.TRecord(
-            voter_addresses=sp.TList(sp.TAddress), 
+            voter_addresses=sp.TList(sp.TAddress),
             auction_and_token_id=sp.TNat,
         ).layout(("voter_addresses","auction_and_token_id"))
 
@@ -506,7 +506,7 @@ class VoterMoneyPoolErrorMessage:
     ALL_VOTES_ALREADY_PAYED_OUT = "{}ALL_VOTES_ALREADY_PAYED_OUT".format(PREFIX)
 
 class SetAuctionRewardParams():
-    """ 
+    """
     The data-type class for setting the voter_rewards for a specific auction (and it's corresponding token)
     """
     def get_type():
@@ -524,7 +524,7 @@ class VoterMoneyPoolContract(sp.Contract):
             "name": "BLCKBOOK-VoterMoneyPool",
             "description": "BLCKBOOK beta implementation of a VoterMoneyPool",
             "views": list_of_views,
-            "authors": ["Niels Hanselmann", "Simon Schiebler"], 
+            "authors": ["Niels Hanselmann", "Simon Schiebler"],
             "homepage": "https://blckbook.vote",
             "source": {"tools": ["SmartPy"], "location": "https://github.com/BLCKBOOK/BLCKBOOK-contract"},
         }
@@ -543,11 +543,11 @@ class VoterMoneyPoolContract(sp.Contract):
 
         self.init(
             administrator = administrator,
-            auctions=sp.big_map(tkey=sp.TNat, tvalue = sp.TMutez),        
+            auctions=sp.big_map(tkey=sp.TNat, tvalue = sp.TMutez),
             vote_map = sp.big_map(tkey=sp.TAddress, tvalue=sp.TList(sp.TNat)),
             metadata = sp.big_map(tkey = sp.TString, tvalue = sp.TBytes),
-        )   
-     
+        )
+
     @sp.entry_point
     def set_administrator(self, params):
         sp.verify(sp.sender == self.data.administrator, VoterMoneyPoolErrorMessage.NOT_ADMIN)
@@ -580,7 +580,7 @@ class VoterMoneyPoolContract(sp.Contract):
                 already_resolved.value.add(auction)
             sp.else:
                 not_resolved_yet.value.push(auction)
-        
+
         self.data.vote_map[sp.sender] = not_resolved_yet.value
 
         sp.if (sum.value > sp.mutez(0)):
@@ -606,6 +606,383 @@ class VoterMoneyPoolContract(sp.Contract):
                     already_resolved.value.add(auction)
         sp.result(sum.value)
 
+class FA2Spray(sp.Contract):
+    """Minimal FA2 contract for fungible tokens.
+
+    This is a minimal example showing how to implement an NFT following
+    the FA2 standard in SmartPy. It is for illustrative purposes only.
+    For a more flexible toolbox aimed at real world applications please
+    refer to FA2_lib.
+    """
+
+    def __init__(self, administrator, the_vote, metadata_base, metadata_url):
+        self.init(
+            administrator=administrator,
+            the_vote=the_vote,
+            ledger=sp.big_map(tkey=sp.TPair(sp.TAddress, sp.TNat), tvalue=sp.TNat),
+            metadata=sp.utils.metadata_of_url(metadata_url),
+            next_token_id=sp.nat(0),
+            operators=sp.big_map(
+                tkey=sp.TRecord(
+                    owner=sp.TAddress, operator=sp.TAddress, token_id=sp.TNat
+                ).layout(("owner", ("operator", "token_id"))),
+                tvalue=sp.TUnit,
+            ),
+            supply=sp.big_map(tkey=sp.TNat, tvalue=sp.TNat),
+            token_metadata=sp.big_map(
+                tkey=sp.TNat,
+                tvalue=sp.TRecord(
+                    token_id=sp.TNat, token_info=sp.TMap(sp.TString, sp.TBytes)
+                ),
+            ),
+        )
+        metadata_base["views"] = [
+            self.all_tokens,
+            self.get_balance,
+            self.is_operator,
+            self.total_supply,
+        ]
+        self.init_metadata("metadata_base", metadata_base)
+
+    @sp.entry_point
+    def transfer(self, batch):
+        """Accept a list of transfer operations.
+
+        Each transfer operation specifies a source: `from_` and a list
+        of transactions. Each transaction specifies the destination: `to_`,
+        the `token_id` and the `amount` to be transferred.
+
+        Args:
+            batch: List of transfer operations.
+        Raises:
+            `FA2_TOKEN_UNDEFINED`, `FA2_NOT_OPERATOR`, `FA2_INSUFFICIENT_BALANCE`
+        """
+        sp.set_type_expr(batch, BatchTransfer.get_type())
+        with sp.for_("transfer", batch) as transfer:
+            with sp.for_("tx", transfer.txs) as tx:
+                sp.verify(tx.token_id < self.data.next_token_id, "FA2_TOKEN_UNDEFINED")
+                from_ = (transfer.from_, tx.token_id)
+                to_ = (tx.to_, tx.token_id)
+                sp.verify(
+                    (transfer.from_ == sp.sender)
+                    | self.data.operators.contains(
+                        sp.record(
+                            owner=transfer.from_,
+                            operator=sp.sender,
+                            token_id=tx.token_id,
+                        ))
+                    | (self.data.the_vote == sp.sender), # the vote can transfer anything
+                    "FA2_NOT_OPERATOR",
+                )
+                self.data.ledger[from_] = sp.as_nat(
+                    self.data.ledger.get(from_, 0) - tx.amount,
+                    "FA2_INSUFFICIENT_BALANCE",
+                )
+                self.data.ledger[to_] = self.data.ledger.get(to_, 0) + tx.amount
+
+    @sp.entry_point
+    def update_operators(self, actions):
+        """Accept a list of variants to add or remove operators.
+
+        Operators can perform transfer on behalf of the owner.
+        Owner is a Tezos address which can hold tokens.
+
+        Only the owner can change its operators.
+
+        Args:
+            actions: List of operator update actions.
+        Raises:
+            `FA2_NOT_OWNER`
+        """
+        with sp.for_("update", actions) as action:
+            with action.match_cases() as arg:
+                with arg.match("add_operator") as operator:
+                    sp.verify(operator.owner == sp.sender, "FA2_NOT_OWNER")
+                    self.data.operators[operator] = sp.unit
+                with arg.match("remove_operator") as operator:
+                    sp.verify(operator.owner == sp.sender, "FA2_NOT_OWNER")
+                    del self.data.operators[operator]
+
+    @sp.entry_point
+    def balance_of(self, callback, requests):
+        """Send the balance of multiple account / token pairs to a
+        callback address.
+
+        transfer 0 mutez to `callback` with corresponding response.
+
+        Args:
+            callback (contract): Where we callback the answer.
+            requests: List of requested balances.
+        Raises:
+            `FA2_TOKEN_UNDEFINED`, `FA2_CALLBACK_NOT_FOUND`
+        """
+
+        def f_process_request(req):
+            sp.verify(req.token_id < self.data.next_token_id, "FA2_TOKEN_UNDEFINED")
+            sp.result(
+                sp.record(
+                    request=sp.record(owner=req.owner, token_id=req.token_id),
+                    balance=self.data.ledger.get((req.owner, req.token_id), 0),
+                )
+            )
+
+        t_request = sp.TRecord(owner=sp.TAddress, token_id=sp.TNat)
+        sp.set_type(requests, sp.TList(t_request))
+        sp.set_type(
+            callback,
+            sp.TContract(sp.TList(sp.TRecord(request=t_request, balance=sp.TNat))),
+        )
+        sp.transfer(requests.map(f_process_request), sp.mutez(0), callback)
+
+    @sp.entry_point
+    def set_administrator(self, params):
+        sp.verify(sp.sender == self.data.administrator, "FA2_NOT_ADMIN")
+        self.data.administrator = params
+
+    @sp.entry_point
+    def mint(self, to_, amount, token):
+        """(Admin only) Create new tokens from scratch and assign
+        them to `to_`.
+
+        If `token` is "existing": increase the supply of the `token_id`.
+        If `token` is "new": create a new token and assign the `metadata`.
+
+        Args:
+            to_ (address): Receiver of the tokens.
+            amount (nat): Amount of token to be minted.
+            token (variant): "_new_": id of the token, "_existing_": metadata of the token.
+        Raises:
+            `FA2_NOT_ADMIN`, `FA2_TOKEN_UNDEFINED`
+        """
+        sp.verify(sp.sender == self.data.administrator, "FA2_NOT_ADMIN")
+        with token.match_cases() as arg:
+            with arg.match("new") as metadata:
+                sp.verify(self.data.next_token_id == 0, "FA2_NOT_SINGLE_ASSET")
+                token_id = sp.compute(self.data.next_token_id) # only can mint one token and then create more of it
+                self.data.token_metadata[token_id] = sp.record(
+                    token_id=token_id, token_info=metadata
+                )
+                self.data.supply[token_id] = amount
+                self.data.ledger[(to_, token_id)] = amount
+                self.data.next_token_id += 1
+            with arg.match("existing") as token_id:
+                sp.verify(token_id < self.data.next_token_id, "FA2_TOKEN_UNDEFINED")
+                self.data.supply[token_id] += amount
+                self.data.ledger[(to_, token_id)] = (
+                    self.data.ledger.get((to_, token_id), 0) + amount
+                )
+
+    @sp.onchain_view(pure=True)
+    def all_tokens(self):
+        """(Offchain view) Return the list of all the `token_id` known to the contract."""
+        sp.result(sp.range(0, self.data.next_token_id))
+
+    @sp.onchain_view(pure=True)
+    def get_balance(self, params):
+        """(Offchain view) Return the balance of an address for the specified `token_id`."""
+        sp.set_type(
+            params,
+            sp.TRecord(owner=sp.TAddress, token_id=sp.TNat).layout(
+                ("owner", "token_id")
+            ),
+        )
+        sp.verify(params.token_id < self.data.next_token_id, "FA2_TOKEN_UNDEFINED")
+        sp.result(self.data.ledger.get((params.owner, params.token_id), 0))
+
+    @sp.onchain_view(pure=True)
+    def total_supply(self, params):
+        """(Offchain view) Return the total number of tokens for the given `token_id` if known or
+        fail if not."""
+        sp.verify(params.token_id < self.data.next_token_id, "FA2_TOKEN_UNDEFINED")
+        sp.result(self.data.supply.get(params.token_id, 0))
+
+    @sp.onchain_view(pure=True)
+    def is_operator(self, params):
+        """(Offchain view) Return whether `operator` is allowed to transfer `token_id` tokens
+        owned by `owner`."""
+        sp.result(self.data.operators.contains(params))
+
+
+metadata_base = {
+    "version": "1.0.0",
+    "description": "This is an adapted  minimal implementation of FA2 (TZIP-012) using SmartPy. It is used for the $PRAY-Token",
+    "interfaces": ["TZIP-012", "TZIP-016"],
+    "authors": ["SmartPy <https://smartpy.io/#contact>"],
+    "homepage": "https://smartpy.io/ide?template=fa2_fungible_minimal.py",
+    "source": {
+        "tools": ["SmartPy"],
+        "location": "https://gitlab.com/SmartPy/smartpy/-/raw/master/python/templates/fa2_fungible_minimal.py",
+    },
+    "permissions": {
+        "operator": "owner-or-operator-transfer",
+        "receiver": "owner-no-hook",
+        "sender": "owner-no-hook",
+    },
+}
+
+
+class TheVote(sp.Contract):
+    def __init__(self, administrator, tokens_contract_address, auction_house_address, voter_money_pool_address):
+        sp.set_type_expr(administrator, sp.TAddress)
+        sp.set_type_expr(tokens_contract_address, sp.TAddress)
+        sp.set_type_expr(auction_house_address, sp.TAddress)
+        sp.set_type_expr(voter_money_pool_address, sp.TAddress)
+
+        list_of_views = [
+        ]
+
+        metadata = {
+            "name": "BLCKBOOK The Vote",
+            "description": "BLCKBOOK The Vote beta implementation. Using SmartPy.\n\n",
+            "version": "0.1",
+            "views": list_of_views,
+            "interfaces": [],
+            "authors": ["Niels Hanselmann"],
+            "homepage": "https://blckbook.vote",
+            "source": {"tools": ["SmartPy"], "location": "https://github.com/BLCKBOOK/BLCKBOOK-contract"},
+            "permissions": {},
+        }
+
+        # Helper method that builds the metadata and produces the JSON representation as an artifact.
+        self.init_metadata("BLCKBOOK-THE-VOTE", metadata)  # the string is just for the output of the online-IDE
+
+        self.init_type(sp.TRecord(
+            administrator=sp.TAddress,
+            tokens_contract_address=sp.TAddress,
+            spray_contract_address=sp.TAddress,
+            auction_house_address=sp.TAddress,
+            voter_money_pool_address=sp.TAddress,
+            all_artworks=sp.TNat,
+            metadata=sp.TBigMap(sp.TString, sp.TBytes),
+            paused=sp.TBool,
+            vote_data=sp.TBigMap(sp.TNat, sp.TRecord(vote_id=sp.TNat, vote_info=sp.TMap(sp.TString, sp.TBytes), uploader=sp.TAddress)),
+            vote_count=sp.TBigMap(sp.TNat, sp.TNat)
+        ).layout(("administrator", ("tokens_contract_address", ("spray_contract_address", ("auction_house_address", ("voter_money_pool_address",("all_artworks", ("metadata", ("paused", ("vote_data", "vote_count")))))))))))
+        self.init(
+            administrator=administrator,
+            tokens_contract_address=tokens_contract_address,
+            spray_contract_address=tokens_contract_address,
+            auction_house_address=auction_house_address,
+            voter_money_pool_address=voter_money_pool_address,
+            all_artworks=0,
+            metadata=sp.big_map(tkey=sp.TString, tvalue=sp.TBytes),
+            paused=False,
+            vote_data=sp.big_map(
+                tkey=sp.TNat,
+                tvalue=sp.TRecord(vote_id=sp.TNat, vote_info=sp.TMap(sp.TString, sp.TBytes), uploader=sp.TAddress)
+            ),
+            # if vote_count is set to 0 for an artwork we say that it is approved.
+            # Approval is done either off-chain or it can be done-on-chain if somebody submitted on-chain
+            vote_count=sp.big_map(tkey = sp.TNat, tvalue = sp.TNat)
+        )
+
+    @sp.entry_point
+    def set_administrator(self, params):
+        sp.verify(sp.sender == self.data.administrator, 'THE_VOTE_NOT_ADMIN')
+        self.data.administrator = params
+
+    @sp.entry_point
+    def set_spray_contract(self, params):
+        sp.verify(sp.sender == self.data.administrator, 'THE_VOTE_NOT_ADMIN')
+        self.data.spray_contract_address = params
+
+    @sp.entry_point
+    def set_administrator_of_token_contract(self, params):
+        sp.verify(sp.sender == self.data.administrator, 'THE_VOTE_NOT_ADMIN')
+        sp.set_type_expr(params, sp.TAddress)
+
+        token_contract = sp.contract(sp.TAddress, self.data.tokens_contract_address,
+                                                entry_point="set_administrator").open_some()
+        sp.transfer(
+            params,
+            sp.mutez(0),
+            token_contract,
+        )
+
+    @sp.entry_point
+    def set_administrator_of_voter_money_pool_contract(self, params):
+        sp.verify(sp.sender == self.data.administrator, 'THE_VOTE_NOT_ADMIN')
+        sp.set_type_expr(params, sp.TAddress)
+
+        voter_money_pool_contract = sp.contract(sp.TAddress, self.data.voter_money_pool_address,
+                                     entry_point="set_administrator").open_some()
+        sp.transfer(
+            params,
+            sp.mutez(0),
+            voter_money_pool_contract,
+        )
+
+    @sp.entry_point
+    def set_administrator_of_auction_house_contract(self, params):
+        sp.verify(sp.sender == self.data.administrator, 'THE_VOTE_NOT_ADMIN')
+        sp.set_type_expr(params, sp.TAddress)
+
+        auction_house_contract = sp.contract(sp.TAddress, self.data.auction_house_address,
+                                     entry_point="set_administrator").open_some()
+        sp.transfer(
+            params,
+            sp.mutez(0),
+            auction_house_contract,
+        )
+
+    @sp.entry_point
+    def set_tokens_contract_address(self, params):
+        """
+        Entry-Point for setting the FA2-Contract Address
+        """
+        sp.verify(sp.sender == self.data.administrator, 'THE_VOTE_NOT_ADMIN')
+        self.data.tokens_contract_address = params
+
+    @sp.entry_point
+    def set_voter_money_pool_address(self, params):
+        """
+        Entry-Point for setting the address of the voter_money_pool which will get the shares for the voters and will get called with the info how much every voter gets
+        """
+        sp.verify(sp.sender == self.data.administrator, 'THE_VOTE_NOT_ADMIN')
+        self.data.voter_money_pool_address = params
+
+    @sp.entry_point
+    def pause_and_resume(self, state):
+        """
+        Pause the contract. This will forbid further admissions. Only admin can do this.
+        """
+        sp.verify(sp.sender == self.data.administrator, 'THE_VOTE_NOT_ADMIN')
+        sp.set_type_expr(state, sp.TBool)
+        self.data.paused = state
+
+
+    @sp.entry_point
+    def admission(self, metadata, uploader):
+        """
+        Add an artwork so it can be voted for in the next cycle. Only admin can do this
+        """
+        sp.verify(sp.sender == self.data.administrator, 'THE_VOTE_NOT_ADMIN')
+        sp.verify(~ self.data.paused, 'THE_VOTE_PAUSED')
+        sp.set_type_expr(metadata, sp.TMap(sp.TString, sp.TBytes))
+        sp.set_type_expr(uploader, sp.TAddress)
+
+        self.data.vote_data[self.data.all_artworks] = sp.record(vote_id = self.data.all_artworks, vote_info = metadata, uploader = uploader)
+        self.data.vote_count[self.data.all_artworks] = 0
+        self.data.all_artworks = self.data.all_artworks + 1
+
+    @sp.entry_point
+    def vote(self, artwork_id, amount):
+        """
+        Add votes to the an artwork. Will get the amount of $PRAY tokens and transmit them to THE VOTE
+        """
+        sp.set_type_expr(artwork_id, sp.TNat)
+        sp.set_type_expr(amount, sp.TNat)
+
+        spray_contract = sp.contract(BatchTransfer.get_type(), self.data.spray_contract_address,
+                                     entry_point="transfer").open_some()
+
+        # we now transfer the $PRAY tokens to the contract itself
+        sp.transfer([BatchTransfer.item(sp.sender, [
+            sp.record(to_ = sp.self_address, token_id = 0, amount = amount)])],
+                    sp.mutez(0), spray_contract)
+
+        self.data.vote_count[artwork_id] += amount
+
 class TestHelper():
     def make_metadata(symbol, name, decimals):
         "Helper function to build metadata JSON bytes values."
@@ -622,6 +999,7 @@ class TestHelper():
         result = sp.pair(user, token)
         return result
 
+"""
 @sp.add_test(name = "FA2-Contract Test")
 def test():
     scenario = sp.test_scenario()
@@ -738,7 +1116,7 @@ def test():
                                               amount = 1,
                                               token_id = 0)]),
         ]).run(sender = admin)
-   
+
     scenario.h1("Burning")
     tok_burn = TestHelper.make_metadata(
         name = "The token to burn",
@@ -781,7 +1159,7 @@ def test():
     scenario = sp.test_scenario()
     scenario.h1("Operators FA2 Contract")
     scenario.table_of_contents()
-    
+
     admin = sp.test_account("Administrator")
     alice = sp.test_account("Alice")
     bob   = sp.test_account("Bob")
@@ -791,7 +1169,7 @@ def test():
     c1 = TokensContract(admin.address)
 
     scenario += c1
-    
+
     scenario.p("Calling 0 updates should work:")
     c1.update_operators([]).run()
     scenario.h3("Operator Accounts")
@@ -1015,8 +1393,8 @@ def test():
     fa2 = TokensContract(admin.address)
     scenario += fa2
 
-    auction_house = AuctionHouseContract(administrator=admin.address, 
-        voter_money_pool = voter_money_pool.address, 
+    auction_house = AuctionHouseContract(administrator=admin.address,
+        voter_money_pool = voter_money_pool.address,
         blckbook_collector = blckbook_collector.address,
         tokens_contract_address = fa2.address)
     scenario += auction_house
@@ -1037,7 +1415,7 @@ def test():
 
     scenario += auction_house.create_auction(
         auction_and_token_id=sp.nat(0),
-        end_timestamp=sp.timestamp(0).add_days(7),  
+        end_timestamp=sp.timestamp(0).add_days(7),
         voter_amount=sp.nat(12365),
         uploader=alice.address,
         bid_amount=sp.mutez(1000000),
@@ -1065,13 +1443,13 @@ def test():
 
     scenario.h3("Alice can't bid cause she is the uploader")
     scenario += auction_house.bid(0).run(sender=alice,amount=sp.mutez(3000000), now=sp.timestamp(0).add_minutes(10), valid=False)
-    
+
     scenario.h2("Try to bid on auctions, that is over")
     scenario += auction_house.bid(0).run(sender=dan, amount=sp.mutez(501001327), now=sp.timestamp(0).add_minutes(5).add_days(7), valid=False)
 
     scenario.h3("View is not empty anymore")
     scenario.show(auction_house.get_expired_auctions(sp.timestamp(0).add_minutes(5).add_days(7)))
-    
+
     scenario.h2("Admin ends auction")
     scenario += auction_house.end_auction(0).run(sender=admin, amount=sp.mutez(0), now=sp.timestamp(0).add_minutes(5).add_days(7))
 
@@ -1134,9 +1512,9 @@ def test():
 
     scenario.h3("test offchain-view get-balance when the voter has not voted for anything")
     scenario.verify(voter_money_pool.get_balance(alice.address) == sp.mutez(0))
-    
+
     voter_money_pool.add_votes(sp.record(
-            voter_addresses=[alice.address, bob.address], 
+            voter_addresses=[alice.address, bob.address],
             auction_and_token_id=sp.nat(0),
         )).run(sender=admin)
 
@@ -1167,12 +1545,12 @@ def test():
     scenario.h2("Add multiple votes and withdraw between setting the voter rewards")
 
     voter_money_pool.add_votes(sp.record(
-        voter_addresses=[alice.address, bob.address], 
+        voter_addresses=[alice.address, bob.address],
         auction_and_token_id=sp.nat(1),
     )).run(sender=admin)
 
-    voter_money_pool.add_votes(sp.record( 
-        voter_addresses=[alice.address, bob.address], 
+    voter_money_pool.add_votes(sp.record(
+        voter_addresses=[alice.address, bob.address],
         auction_and_token_id=sp.nat(2),
     )).run(sender=admin)
 
@@ -1199,20 +1577,20 @@ def test():
     scenario.h1("Check what happens when the admin messes up and enters wrong data")
     scenario.h3("So we add the same voters twice")
     voter_money_pool.add_votes(sp.record(
-        voter_addresses=[alice.address, bob.address], 
+        voter_addresses=[alice.address, bob.address],
         auction_and_token_id=sp.nat(5),
     )).run(sender=admin)
 
-    voter_money_pool.add_votes(sp.record( 
-        voter_addresses=[alice.address, bob.address], 
+    voter_money_pool.add_votes(sp.record(
+        voter_addresses=[alice.address, bob.address],
         auction_and_token_id=sp.nat(5),
     )).run(sender=admin)
 
     scenario.h3("Now we resolve the vote_pool")
     voter_money_pool.set_auction_rewards(auction_and_token_id=sp.nat(5), reward=sp.mutez(400)).run(sender=admin, amount=sp.mutez(800))
-    
+
     scenario.h3("And the withdrawls (including the view) should return the right values and not count something twice")
-    scenario.verify(voter_money_pool.get_balance(alice.address) == sp.mutez(400)) 
+    scenario.verify(voter_money_pool.get_balance(alice.address) == sp.mutez(400))
     voter_money_pool.withdraw().run(sender=alice, valid=True)
     scenario.verify(voter_money_pool.balance  == sp.mutez(400))
     voter_money_pool.withdraw().run(sender=bob, valid=True)
@@ -1241,8 +1619,8 @@ def test():
     fa2 = TokensContract(admin.address)
     scenario += fa2
 
-    auction_house = AuctionHouseContract(administrator=admin.address, 
-        voter_money_pool = voter_money_pool.address, 
+    auction_house = AuctionHouseContract(administrator=admin.address,
+        voter_money_pool = voter_money_pool.address,
         blckbook_collector = blckbook_collector.address,
         tokens_contract_address = fa2.address)
     scenario += auction_house
@@ -1262,7 +1640,7 @@ def test():
     scenario.h3("Create the auction")
     scenario += auction_house.create_auction(
         auction_and_token_id=sp.nat(0),
-        end_timestamp=sp.timestamp(0).add_days(7),  
+        end_timestamp=sp.timestamp(0).add_days(7),
         voter_amount=sp.nat(3),
         uploader=alice.address,
         bid_amount=sp.mutez(1000000),
@@ -1270,7 +1648,7 @@ def test():
 
     scenario.h3("Add the 3 votes for the token")
     voter_money_pool.add_votes(sp.record(
-        voter_addresses=[alice.address, bob.address, dan.address], 
+        voter_addresses=[alice.address, bob.address, dan.address],
         auction_and_token_id=sp.nat(0),
     )).run(sender=admin)
 
@@ -1318,7 +1696,7 @@ def test():
 
     scenario.h3("add the votes for the newly created auction")
     voter_money_pool.add_votes(sp.record(
-        voter_addresses=[alice.address, bob.address, dan.address], 
+        voter_addresses=[alice.address, bob.address, dan.address],
         auction_and_token_id=sp.nat(1),
     )).run(sender=admin)
 
@@ -1330,7 +1708,7 @@ def test():
 
     scenario.h3("end the auction")
     scenario += auction_house.end_auction(1).run(sender=admin, amount=sp.mutez(0), now=sp.timestamp(0).add_minutes(5).add_days(14))
-    
+
     scenario.h3("View is empty again")
     scenario.show(auction_house.get_expired_auctions(sp.timestamp(0).add_minutes(6).add_days(14)))
 
@@ -1358,8 +1736,203 @@ def test():
     voter_money_pool = VoterMoneyPoolContract(admin_address)
     scenario += voter_money_pool
 
-    auction_house = AuctionHouseContract(administrator=admin_address, 
-        voter_money_pool = sp.address('KT1XeA6tZYeBCm7aux3SAPswTuRE72R3VUCW'), 
+    auction_house = AuctionHouseContract(administrator=admin_address,
+        voter_money_pool = sp.address('KT1XeA6tZYeBCm7aux3SAPswTuRE72R3VUCW'),
         blckbook_collector = admin_address,
         tokens_contract_address = sp.address('KT1HAtdXKvXqK2He3Xr2xmHQ9cYrxPTL7X9Z'))
     scenario += auction_house
+
+    the_vote = TheVote(administrator=admin_address,
+        tokens_contract_address = sp.address('KT1HAtdXKvXqK2He3Xr2xmHQ9cYrxPTL7X9Z'),
+        auction_house_address=sp.address('KT1XeA6tZYeBCm7aux3SAPswTuRE72R3VUCW'),
+        voter_money_pool_address=sp.address('KT1XeA6tZYeBCm7aux3SAPswTuRE72R3VUCW'))
+    scenario += the_vote
+
+"""
+@sp.add_test(name = "Setting Admins of other contracts through theVote")
+def test():
+
+    scenario = sp.test_scenario()
+    scenario.h1("Setting Admins of other contracts through theVote")
+    scenario.table_of_contents()
+
+    admin = sp.test_account("Administrator")
+    admin_address = admin.address;
+
+    fa2 = TokensContract(admin_address)
+    scenario += fa2
+
+    voter_money_pool = VoterMoneyPoolContract(admin_address)
+    scenario += voter_money_pool
+
+    auction_house = AuctionHouseContract(administrator=admin_address,
+        voter_money_pool = voter_money_pool.address,
+        blckbook_collector = admin_address,
+        tokens_contract_address = fa2.address)
+    scenario += auction_house
+
+    the_vote = TheVote(administrator=admin_address,
+        tokens_contract_address = fa2.address,
+        auction_house_address=auction_house.address,
+        voter_money_pool_address=voter_money_pool.address)
+    scenario += the_vote
+
+    scenario.h2("Admin Sets for FA2")
+
+    scenario.h3("Set theVote as admin of FA2")
+    scenario += fa2.set_administrator(the_vote.address).run(sender=admin)
+    scenario.h3("the Votes sets admin as admin of FA2 again through the nested call")
+    scenario += the_vote.set_administrator_of_token_contract(admin.address).run(sender=admin)
+    scenario.h3("Set theVote as admin of FA2 again")
+    scenario += fa2.set_administrator(the_vote.address).run(sender=admin)
+
+    scenario.h3("Bob can not set the admin of FA2 through theVote cause he is not its admin")
+    bob = sp.test_account("Bob")
+    scenario += the_vote.set_administrator_of_token_contract(admin.address).run(sender=bob, valid=False)
+
+    scenario.h2("Admin Sets for Auction_House")
+
+    scenario.h3("Set theVote as admin of Auction_house")
+    scenario += auction_house.set_administrator(the_vote.address).run(sender=admin)
+    scenario.h3("the Votes sets admin as admin of Auction_house again through the nested call")
+    scenario += the_vote.set_administrator_of_auction_house_contract(admin.address).run(sender=admin)
+    scenario.h3("Set theVote as admin of Auction_House again")
+    scenario += auction_house.set_administrator(the_vote.address).run(sender=admin)
+
+    scenario.h2("Admin Sets for Voter_Money_Pool_House")
+    scenario.h3("Set theVote as admin of Voter_Money_Pool")
+    scenario += voter_money_pool.set_administrator(the_vote.address).run(sender=admin)
+    scenario.h3("the Votes sets admin as admin ofvoter_money_pool again through the nested call")
+    scenario += the_vote.set_administrator_of_voter_money_pool_contract(admin.address).run(sender=admin)
+    scenario.h3("Set theVote as admin of voter_money_pool again")
+    scenario += voter_money_pool.set_administrator(the_vote.address).run(sender=admin)
+
+@sp.add_test(name = "Simple Artwork Admission")
+def test():
+
+    scenario = sp.test_scenario()
+    scenario.h1("Simple Artwork Admission")
+    scenario.table_of_contents()
+
+    admin = sp.test_account("Administrator")
+    admin_address = admin.address;
+
+    fa2 = TokensContract(admin_address)
+    scenario += fa2
+
+    voter_money_pool = VoterMoneyPoolContract(admin_address)
+    scenario += voter_money_pool
+
+    auction_house = AuctionHouseContract(administrator=admin_address,
+        voter_money_pool = voter_money_pool.address,
+        blckbook_collector = admin_address,
+        tokens_contract_address = fa2.address)
+    scenario += auction_house
+
+    the_vote = TheVote(administrator=admin_address,
+        tokens_contract_address = fa2.address,
+        auction_house_address=auction_house.address,
+        voter_money_pool_address=voter_money_pool.address)
+    scenario += the_vote
+
+    bob = sp.test_account("Bob")
+
+    metadata = TestHelper.make_metadata(
+        name = "Bobs Spot",
+        decimals = 0,
+        symbol= "TK0" )
+
+    scenario.h2("Simple Artwork Admission")
+    scenario.h3("Bob can submit artwork")
+    scenario += the_vote.admission(metadata = metadata, uploader = bob.address).run(sender=bob, valid=False)
+    scenario.h3("Admin can")
+    scenario += the_vote.admission(metadata = metadata, uploader = bob.address).run(sender=admin, valid=True)
+
+
+    fa2_admin = sp.test_account("fa2_admin")
+
+@sp.add_test(name="FA2Spray Test")
+def test():
+    scenario = sp.test_scenario()
+    admin = sp.test_account("Administrator")
+    bob = sp.test_account("Bob")
+    alice = sp.test_account("Alice")
+
+    spray = FA2Spray(admin.address, admin.address, metadata_base, "https//example.com")
+    scenario += spray
+
+    spray_metadata = TestHelper.make_metadata(
+        name="$PRAY",
+        decimals=0,
+        symbol="$PRAY")
+
+    scenario.h2("Simple $PRAY Minting tests")
+    scenario.h3("Bob can not mint a new token")
+    spray.mint(to_= bob.address, amount = 1000, token = sp.variant("new", spray_metadata)).run(sender=bob, valid=False)
+    scenario.h3("can mint the first $PRAY for alice")
+    spray.mint(to_= alice.address, amount = 1000,token = sp.variant("new", spray_metadata)).run(sender=admin)
+    scenario.h3("can not mint a new token for bob as alice")
+    spray.mint(to_= bob.address, amount = 1000, token = sp.variant("new", spray_metadata)).run(sender=admin, valid=False)
+    scenario.h3("But we can mint him existing ones")
+    spray.mint(to_= bob.address, amount = 1000, token = sp.variant("existing", 0)).run(sender=admin)
+
+@sp.add_test(name = "Vote Tests")
+def test():
+
+    scenario = sp.test_scenario()
+    scenario.h1("Simple Artwork Admission")
+    scenario.table_of_contents()
+
+    admin = sp.test_account("Administrator")
+    admin_address = admin.address;
+
+    fa2 = TokensContract(admin_address)
+    scenario += fa2
+
+    voter_money_pool = VoterMoneyPoolContract(admin_address)
+    scenario += voter_money_pool
+
+    auction_house = AuctionHouseContract(administrator=admin_address,
+        voter_money_pool = voter_money_pool.address,
+        blckbook_collector = admin_address,
+        tokens_contract_address = fa2.address)
+    scenario += auction_house
+
+    the_vote = TheVote(administrator=admin_address,
+        tokens_contract_address = fa2.address,
+        auction_house_address=auction_house.address,
+        voter_money_pool_address=voter_money_pool.address)
+    scenario += the_vote
+
+    bob = sp.test_account("Bob")
+
+    metadata = TestHelper.make_metadata(
+        name = "Bobs Spot",
+        decimals = 0,
+        symbol= "TK0")
+
+    scenario.h2("Vote Tests")
+    scenario.h3("Admin submits artwork")
+    scenario += the_vote.admission(metadata = metadata, uploader = bob.address).run(sender=admin, valid=True)
+
+    spray = FA2Spray(admin.address, the_vote.address, metadata_base, "https//example.com")
+    scenario += spray
+
+    spray_metadata = TestHelper.make_metadata(
+        name="$PRAY",
+        decimals=0,
+        symbol="$PRAY")
+
+    the_vote.set_spray_contract(spray.address).run(sender=admin)
+
+    scenario.h3("we mint the first $PRAY for bob")
+    spray.mint(to_=bob.address, amount=1000, token=sp.variant("new", spray_metadata)).run(sender=admin)
+
+    spray.transfer([BatchTransfer.item(bob.address, [
+        sp.record(to_=admin.address, token_id=0, amount=300)])]).run(sender=bob)
+
+    scenario.h3("bob votes for his own upload")
+    the_vote.vote(artwork_id = 0, amount = 100).run(sender=bob)
+
+    scenario.h3("bob tries to vote with too mutch")
+    the_vote.vote(artwork_id = 0, amount = 1000).run(sender=bob, valid=False)
