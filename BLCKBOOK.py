@@ -657,7 +657,7 @@ class FA2Spray(sp.Contract):
         Raises:
             `FA2_TOKEN_UNDEFINED`, `FA2_NOT_OPERATOR`, `FA2_INSUFFICIENT_BALANCE`
         """
-        sp.set_type_expr(batch, BatchTransfer.get_type())
+        sp.set_type(batch, BatchTransfer.get_type())
         with sp.for_("transfer", batch) as transfer:
             with sp.for_("tx", transfer.txs) as tx:
                 sp.verify(tx.token_id < self.data.next_token_id, "FA2_TOKEN_UNDEFINED")
@@ -774,13 +774,13 @@ class FA2Spray(sp.Contract):
 
     @sp.onchain_view(pure=True)
     def all_tokens(self):
-        """(Offchain view) Return the list of all the `token_id` known to the contract."""
+        """(Onchain view) Return the list of all the `token_id` known to the contract."""
         sp.result(sp.range(0, self.data.next_token_id))
 
     @sp.onchain_view(pure=True)
     def get_balance(self, params):
-        """(Offchain view) Return the balance of an address for the specified `token_id`."""
-        sp.set_type(
+        """(Onchain view) Return the balance of an address for the specified `token_id`."""
+        sp.set_type_expr(
             params,
             sp.TRecord(owner=sp.TAddress, token_id=sp.TNat).layout(
                 ("owner", "token_id")
@@ -791,14 +791,14 @@ class FA2Spray(sp.Contract):
 
     @sp.onchain_view(pure=True)
     def total_supply(self, params):
-        """(Offchain view) Return the total number of tokens for the given `token_id` if known or
+        """(Onchain view) Return the total number of tokens for the given `token_id` if known or
         fail if not."""
         sp.verify(params.token_id < self.data.next_token_id, "FA2_TOKEN_UNDEFINED")
         sp.result(self.data.supply.get(params.token_id, 0))
 
     @sp.onchain_view(pure=True)
     def is_operator(self, params):
-        """(Offchain view) Return whether `operator` is allowed to transfer `token_id` tokens
+        """(Onchain view) Return whether `operator` is allowed to transfer `token_id` tokens
         owned by `owner`."""
         sp.result(self.data.operators.contains(params))
 
@@ -819,7 +819,6 @@ metadata_base = {
         "sender": "owner-no-hook",
     },
 }
-
 
 class TheVote(sp.Contract):
     def __init__(self, administrator, tokens_contract_address, auction_house_address, voter_money_pool_address):
@@ -854,10 +853,15 @@ class TheVote(sp.Contract):
             voter_money_pool_address=sp.TAddress,
             all_artworks=sp.TNat,
             metadata=sp.TBigMap(sp.TString, sp.TBytes),
-            paused=sp.TBool,
-            vote_data=sp.TBigMap(sp.TNat, sp.TRecord(vote_id=sp.TNat, vote_info=sp.TMap(sp.TString, sp.TBytes), uploader=sp.TAddress)),
-            vote_count=sp.TBigMap(sp.TNat, sp.TNat)
-        ).layout(("administrator", ("tokens_contract_address", ("spray_contract_address", ("auction_house_address", ("voter_money_pool_address",("all_artworks", ("metadata", ("paused", ("vote_data", "vote_count")))))))))))
+            artwork_data=sp.TBigMap(sp.TNat, sp.TRecord(artwork_id=sp.TNat, artwork_info=sp.TMap(sp.TString, sp.TBytes), uploader=sp.TAddress)),
+            vote_count=sp.TMap(sp.TNat, sp.TNat),
+            vote_register=sp.TBigMap(sp.TNat, sp.TSet(sp.TAddress)),
+            is_sorted=sp.TBool,
+            minting_started=sp.TBool,
+            artworks_to_mint=sp.TSet(sp.TNat),
+            admission_deadline=sp.TTimestamp,
+            divisor=sp.TNat,
+        ))
         self.init(
             administrator=administrator,
             tokens_contract_address=tokens_contract_address,
@@ -866,14 +870,20 @@ class TheVote(sp.Contract):
             voter_money_pool_address=voter_money_pool_address,
             all_artworks=0,
             metadata=sp.big_map(tkey=sp.TString, tvalue=sp.TBytes),
-            paused=False,
-            vote_data=sp.big_map(
+            artwork_data=sp.big_map(
                 tkey=sp.TNat,
-                tvalue=sp.TRecord(vote_id=sp.TNat, vote_info=sp.TMap(sp.TString, sp.TBytes), uploader=sp.TAddress)
+                tvalue=sp.TRecord(artwork_id=sp.TNat, artwork_info=sp.TMap(sp.TString, sp.TBytes), uploader=sp.TAddress)
             ),
             # if vote_count is set to 0 for an artwork we say that it is approved.
             # Approval is done either off-chain or it can be done-on-chain if somebody submitted on-chain
-            vote_count=sp.big_map(tkey = sp.TNat, tvalue = sp.TNat)
+            vote_count=sp.map(tkey = sp.TNat, tvalue = sp.TNat),
+            vote_register=sp.big_map(tkey=sp.TNat, tvalue=sp.TSet(sp.TAddress)),
+            is_sorted=False,
+            minting_started=False,
+            artworks_to_mint=sp.set({}, t= sp.TNat),
+            admission_deadline = sp.now.add_days(7),
+            divisor=sp.nat(10)
+            # after origination, we have a week to admit artworks
         )
 
     @sp.entry_point
@@ -885,6 +895,12 @@ class TheVote(sp.Contract):
     def set_spray_contract(self, params):
         sp.verify(sp.sender == self.data.administrator, 'THE_VOTE_NOT_ADMIN')
         self.data.spray_contract_address = params
+
+    @sp.entry_point
+    def set_divisor(self, params):
+        sp.verify(sp.sender == self.data.administrator, 'THE_VOTE_NOT_ADMIN')
+        sp.verify(params > 0, "THE_VOTE_DIVISOR_MUST_BE_GREATER_THAN_0")
+        self.data.divisor = params
 
     @sp.entry_point
     def set_administrator_of_token_contract(self, params):
@@ -942,36 +958,30 @@ class TheVote(sp.Contract):
         self.data.voter_money_pool_address = params
 
     @sp.entry_point
-    def pause_and_resume(self, state):
-        """
-        Pause the contract. This will forbid further admissions. Only admin can do this.
-        """
-        sp.verify(sp.sender == self.data.administrator, 'THE_VOTE_NOT_ADMIN')
-        sp.set_type_expr(state, sp.TBool)
-        self.data.paused = state
-
-
-    @sp.entry_point
     def admission(self, metadata, uploader):
         """
         Add an artwork so it can be voted for in the next cycle. Only admin can do this
         """
         sp.verify(sp.sender == self.data.administrator, 'THE_VOTE_NOT_ADMIN')
-        sp.verify(~ self.data.paused, 'THE_VOTE_PAUSED')
+        sp.verify(sp.now < self.data.admission_deadline, "THE_VOTE_ADMISSION_DEADLINE_PASSED")
+
         sp.set_type_expr(metadata, sp.TMap(sp.TString, sp.TBytes))
         sp.set_type_expr(uploader, sp.TAddress)
 
-        self.data.vote_data[self.data.all_artworks] = sp.record(vote_id = self.data.all_artworks, vote_info = metadata, uploader = uploader)
+        self.data.artwork_data[self.data.all_artworks] = sp.record(artwork_id = self.data.all_artworks, artwork_info = metadata, uploader = uploader)
         self.data.vote_count[self.data.all_artworks] = 0
+        self.data.vote_register[self.data.all_artworks] = sp.set([])
         self.data.all_artworks = self.data.all_artworks + 1
 
     @sp.entry_point
     def vote(self, artwork_id, amount):
         """
-        Add votes to the an artwork. Will get the amount of $PRAY tokens and transmit them to THE VOTE
+        Add votes to an artwork. Will get the amount of $PRAY tokens and transmit them to THE VOTE
         """
         sp.set_type_expr(artwork_id, sp.TNat)
         sp.set_type_expr(amount, sp.TNat)
+        sp.verify(amount > 0, 'THE_VOTE_AMOUNT_IS_ZERO')
+        sp.verify(~self.data.is_sorted, "THE_VOTE_VOTES_ARE_ALREADY_SORTED")
 
         spray_contract = sp.contract(BatchTransfer.get_type(), self.data.spray_contract_address,
                                      entry_point="transfer").open_some()
@@ -982,6 +992,123 @@ class TheVote(sp.Contract):
                     sp.mutez(0), spray_contract)
 
         self.data.vote_count[artwork_id] += amount
+        self.data.vote_register[artwork_id].add(sp.sender)
+
+    @sp.entry_point
+    def provide_sorted_votes(self, sorted_list):
+        """
+        Provide a sorted_list of the vote_count map. Can only be called after the admission timeline has passed
+        This will is a mandatory step before minting the succesful votes
+        This will determine which artworks are successful
+        """
+
+        sp.verify(sp.now > self.data.admission_deadline, "THE_VOTE_ADMISSION_HAS_NOT_PASSED")
+        sp.verify(~self.data.minting_started, "THE_VOTE_MINTING_ALREADY_STARTED")
+
+        sp.set_type_expr(sorted_list, sp.TList(sp.TRecord(id = sp.TNat,
+                             vote_amount = sp.TNat)))
+
+        sp.verify(sp.len(sorted_list) == sp.len(self.data.vote_count), "THE_VOTE_WRONG_LENGTH")
+        already_sorted = sp.local('already_sorted', sp.set({}, t=sp.TNat))
+
+        current_index = sp.local("current_index", sp.nat(0))
+        quotient = sp.local("quotient", sp.len(sorted_list) // self.data.divisor)
+
+        self.data.artworks_to_mint = sp.set({}, t=sp.TNat)
+
+        with sp.match_cons(sorted_list) as x1:
+            last_entry = sp.local("last_entry", x1.head.vote_amount)
+            sp.for sorted_entry in sorted_list:
+                current_count = sp.local("current_count", self.data.vote_count.get(sorted_entry.id, None, "THE_VOTE_WRONG_ID"))
+                sp.if ~(current_count.value == sorted_entry.vote_amount):
+                    sp.failwith("THE_VOTE_NOT_THE_SAME_AMOUNT")
+                sp.if sorted_entry.vote_amount <= last_entry.value:
+                    last_entry.value = current_count.value
+                sp.else:
+                    sp.failwith("THE_VOTE_NOT_SORTED_LIST")
+                sp.if already_sorted.value.contains(sorted_entry.id):
+                    sp.failwith("THE_artwork_id_ALREADY_SEEN")
+                sp.else:
+                    already_sorted.value.add(sorted_entry.id)
+                sp.if current_index.value <= quotient.value:
+                    self.data.artworks_to_mint.add(sorted_entry.id)
+                current_index.value += 1
+
+        sp.else:
+            sp.if ~(sp.len(sorted_list) == 0):
+                sp.failwith("THE_VOTE_HEAD_MATCHING_WRONG")
+
+        self.data.is_sorted = True
+
+    @sp.entry_point
+    def mint_artworks(self, max_amount):
+        """
+        Ends a voting-period
+        """
+
+        sp.verify(self.data.is_sorted, "THE_VOTE_VOTES_ARE_NOT_SORTED")
+
+        self.data.minting_started = True
+        sp.set_type_expr(max_amount, sp.TNat)
+
+        current_index = sp.local("current_index", sp.nat(0))
+
+        token_index = sp.local("token_index", sp.view("count_tokens", self.data.tokens_contract_address, sp.unit, sp.TNat).open_some("THE_VOTE_INVALID_VIEW"))
+
+        sp.for artwork in self.data.artworks_to_mint.elements():
+            sp.if (current_index.value < max_amount):
+                token_contract = sp.contract(
+                    sp.TRecord(amount = sp.TNat, token_id = sp.TNat, address = sp.TAddress, metadata = sp.TMap(sp.TString, sp.TBytes)),
+                    self.data.tokens_contract_address,
+                    entry_point="mint").open_some()
+
+                sp.transfer(sp.record(amount= sp.nat(1),
+                                      token_id = current_index.value + token_index.value,
+                                      address=self.data.auction_house_address,
+                                      metadata= self.data.artwork_data[artwork].artwork_info),
+                    sp.mutez(0),
+                    token_contract,
+                )
+
+                auction_house_contract = sp.contract(
+                    sp.TRecord(auction_and_token_id = sp.TNat, end_timestamp = sp.TTimestamp, voter_amount = sp.TNat, uploader = sp.TAddress, bid_amount=sp.TMutez),
+                    self.data.auction_house_address,
+                    entry_point="create_auction").open_some()
+
+                sp.transfer(
+                    sp.record(auction_and_token_id = current_index.value + token_index.value,
+                              end_timestamp = sp.now.add_days(7),
+                              voter_amount = sp.len(self.data.vote_register.get(artwork).elements()),
+                              uploader = self.data.artwork_data[artwork].uploader,
+                              bid_amount=sp.mutez(1000000)),
+                    sp.mutez(0),
+                    auction_house_contract,
+                )
+
+                voter_money_pool_contract = sp.contract(sp.TRecord(voter_addresses=sp.TList(sp.TAddress), auction_and_token_id=sp.TNat), self.data.voter_money_pool_address,
+                                                        entry_point="add_votes").open_some()
+                sp.transfer(
+                    sp.record(voter_addresses=self.data.vote_register[artwork].elements(), auction_and_token_id= current_index.value + token_index.value),
+                    sp.mutez(0),
+                    voter_money_pool_contract,
+                )
+
+                current_index.value += 1
+
+                del self.data.artwork_data[artwork]
+                del self.data.vote_register[artwork]
+                self.data.artworks_to_mint.remove(artwork)
+
+        sp.if sp.len(self.data.artworks_to_mint.elements()) == 0:
+            # this means we minted all or there was nothing to mint, so we now reset everything
+            self.data.admission_deadline = sp.now.add_days(7)
+            self.data.is_sorted = False
+            self.data.minting_started = False
+
+            # we delete the vote_count and also the vote_register as we transmitted them for the winning artworks
+            sp.for vote_to_delete in self.data.vote_count.items():
+                del self.data.vote_count[vote_to_delete.key]
+                del self.data.vote_register[vote_to_delete.key]
 
 class TestHelper():
     def make_metadata(symbol, name, decimals):
@@ -1934,5 +2061,245 @@ def test():
     scenario.h3("bob votes for his own upload")
     the_vote.vote(artwork_id = 0, amount = 100).run(sender=bob)
 
-    scenario.h3("bob tries to vote with too mutch")
+    scenario.h3("bob tries to vote with too much")
     the_vote.vote(artwork_id = 0, amount = 1000).run(sender=bob, valid=False)
+
+    scenario.h3("bob votes again with a small amount")
+    the_vote.vote(artwork_id=0, amount=100).run(sender=bob)
+
+    scenario.h3("bob votes with an amount of 0")
+    the_vote.vote(artwork_id=0, amount=0).run(sender=bob, valid=False)
+@sp.add_test(name = "Provide Sorted Vote List Test")
+def test():
+
+    scenario = sp.test_scenario()
+    scenario.h1("Provide Sorted Vote List Test")
+    scenario.table_of_contents()
+
+    admin = sp.test_account("Administrator")
+    admin_address = admin.address;
+
+    fa2 = TokensContract(admin_address)
+    scenario += fa2
+
+    voter_money_pool = VoterMoneyPoolContract(admin_address)
+    scenario += voter_money_pool
+
+    auction_house = AuctionHouseContract(administrator=admin_address,
+                                         voter_money_pool=voter_money_pool.address,
+                                         blckbook_collector=admin_address,
+                                         tokens_contract_address=fa2.address)
+    scenario += auction_house
+
+    the_vote = TheVote(administrator=admin_address,
+                       tokens_contract_address=fa2.address,
+                       auction_house_address=auction_house.address,
+                       voter_money_pool_address=voter_money_pool.address)
+    scenario += the_vote
+
+    bob = sp.test_account("Bob")
+    metadata = TestHelper.make_metadata(
+        name = "Bobs Spot",
+        decimals = 0,
+        symbol= "TK0")
+
+    scenario.h2("Vote Tests")
+    scenario.h3("Admin submits 5 artworks")
+    scenario += the_vote.admission(metadata=metadata, uploader=bob.address).run(sender=admin, valid=True)
+    scenario += the_vote.admission(metadata=metadata, uploader=bob.address).run(sender=admin, valid=True)
+    scenario += the_vote.admission(metadata=metadata, uploader=bob.address).run(sender=admin, valid=True)
+    scenario += the_vote.admission(metadata=metadata, uploader=bob.address).run(sender=admin, valid=True)
+    scenario += the_vote.admission(metadata=metadata, uploader=bob.address).run(sender=admin, valid=True)
+
+    spray = FA2Spray(admin.address, the_vote.address, metadata_base, "https//example.com")
+    scenario += spray
+
+    spray_metadata = TestHelper.make_metadata(
+        name="$PRAY",
+        decimals=0,
+        symbol="$PRAY")
+
+    the_vote.set_spray_contract(spray.address).run(sender=admin)
+
+    scenario += fa2.set_administrator(the_vote.address).run(sender=admin)
+    scenario += auction_house.set_administrator(the_vote.address).run(sender=admin)
+    scenario += voter_money_pool.set_administrator(the_vote.address).run(sender=admin)
+
+    scenario.h3("we mint the first $PRAY for bob")
+    spray.mint(to_=bob.address, amount=1000, token=sp.variant("new", spray_metadata)).run(sender=admin)
+
+    scenario.h3("we provide a lot of sorted votes to test the algorithm without having voted")
+    scenario.h4("we provide a lot of sorted votes to test the algorithm without having voted")
+    the_vote.provide_sorted_votes([sp.record(id=0, vote_amount=0),
+                                   sp.record(id=1, vote_amount=0),
+                                   sp.record(id=2, vote_amount=0),
+                                   sp.record(id=3, vote_amount=0),
+                                   sp.record(id=4, vote_amount=0)]).run(sender=bob, valid=False)
+
+
+
+    the_vote.provide_sorted_votes([sp.record(id=4, vote_amount=0),
+                                   sp.record(id=0, vote_amount=0),
+                                   sp.record(id=2, vote_amount=0),
+                                   sp.record(id=1, vote_amount=0),
+                                   sp.record(id=3, vote_amount=0)]).run(sender=bob, now = sp.timestamp(0).add_days(8))
+
+    the_vote.provide_sorted_votes([sp.record(id=4, vote_amount=0),
+                                   sp.record(id=0, vote_amount=0),
+                                   sp.record(id=2, vote_amount=0),
+                                   sp.record(id=1, vote_amount=0),
+                                   sp.record(id=1, vote_amount=0),
+                                   sp.record(id=3, vote_amount=0)]).run(sender=bob, valid=False)
+
+    the_vote.provide_sorted_votes([sp.record(id=0, vote_amount=0)]).run(sender=bob, valid=False)
+
+    the_vote.provide_sorted_votes([sp.record(id=4, vote_amount=0),
+                                   sp.record(id=1, vote_amount=0),
+                                   sp.record(id=2, vote_amount=0),
+                                   sp.record(id=3, vote_amount=0),
+                                   sp.record(id=4, vote_amount=0)]).run(sender=bob, valid=False)
+
+    the_vote.provide_sorted_votes([sp.record(id=0, vote_amount=0),
+                                   sp.record(id=0, vote_amount=0),
+                                   sp.record(id=2, vote_amount=0),
+                                   sp.record(id=3, vote_amount=0),
+                                   sp.record(id=4, vote_amount=0)]).run(sender=bob, valid=False)
+
+    the_vote.provide_sorted_votes([sp.record(id=0, vote_amount=2),
+                                   sp.record(id=0, vote_amount=1),
+                                   sp.record(id=2, vote_amount=0),
+                                   sp.record(id=3, vote_amount=0),
+                                   sp.record(id=4, vote_amount=0)]).run(sender=bob, valid=False)
+
+    the_vote.provide_sorted_votes([sp.record(id=0, vote_amount=2),
+                                   sp.record(id=1, vote_amount=1),
+                                   sp.record(id=2, vote_amount=0),
+                                   sp.record(id=3, vote_amount=0),
+                                   sp.record(id=4, vote_amount=0)]).run(sender=bob, valid=False)
+
+    scenario.h3("now we mint the wining artwork, that did not get any votes")
+    the_vote.mint_artworks(1).run(sender=bob)
+
+    scenario.h3("now we bob can not vote on these artworks anymore")
+    the_vote.vote(artwork_id=0, amount=1).run(sender=bob, valid=False)
+    the_vote.vote(artwork_id=1, amount=1).run(sender=bob, valid=False)
+    the_vote.vote(artwork_id=2, amount=10).run(sender=bob, valid=False)
+    the_vote.vote(artwork_id=3, amount=10).run(sender=bob, valid=False)
+    the_vote.vote(artwork_id=4, amount=10).run(sender=bob, valid=False)
+
+    scenario.h3("So now we add new artworks")
+    scenario += the_vote.admission(metadata=metadata, uploader=bob.address).run(sender=admin, valid=True)
+    scenario += the_vote.admission(metadata=metadata, uploader=bob.address).run(sender=admin, valid=True)
+    scenario += the_vote.admission(metadata=metadata, uploader=bob.address).run(sender=admin, valid=True)
+    scenario += the_vote.admission(metadata=metadata, uploader=bob.address).run(sender=admin, valid=True)
+    scenario += the_vote.admission(metadata=metadata, uploader=bob.address).run(sender=admin, valid=True)
+    scenario += the_vote.admission(metadata=metadata, uploader=bob.address).run(sender=admin, valid=True)
+    scenario += the_vote.admission(metadata=metadata, uploader=bob.address).run(sender=admin, valid=True)
+    scenario += the_vote.admission(metadata=metadata, uploader=bob.address).run(sender=admin, valid=True)
+    scenario += the_vote.admission(metadata=metadata, uploader=bob.address).run(sender=admin, valid=True)
+    scenario += the_vote.admission(metadata=metadata, uploader=bob.address).run(sender=admin, valid=True)
+    
+    scenario.h3("now bob votes on these new artworks")
+    the_vote.vote(artwork_id=5, amount=1).run(sender=bob)
+    the_vote.vote(artwork_id=6, amount=1).run(sender=bob)
+    the_vote.vote(artwork_id=7, amount=12).run(sender=bob)
+    the_vote.vote(artwork_id=8, amount=10).run(sender=bob)
+    the_vote.vote(artwork_id=9, amount=10).run(sender=bob)
+
+
+    scenario.h3("we now send different votes to test the algorithm")
+
+    the_vote.provide_sorted_votes([sp.record(id=7, vote_amount=12),
+                                   sp.record(id=9, vote_amount=10),
+                                   sp.record(id=8, vote_amount=10),
+                                   sp.record(id=6, vote_amount=1),
+                                   sp.record(id=5, vote_amount=1),
+                                   sp.record(id=10, vote_amount=0),
+                                   sp.record(id=11, vote_amount=0),
+                                   sp.record(id=12, vote_amount=0),
+                                   sp.record(id=14, vote_amount=0),
+                                   sp.record(id=13, vote_amount=0)]).run(sender=bob, now = sp.timestamp(0).add_days(16))
+
+    the_vote.provide_sorted_votes([sp.record(id=7, vote_amount=12),
+                                   sp.record(id=9, vote_amount=10),
+                                   sp.record(id=9, vote_amount=10),
+                                   sp.record(id=6, vote_amount=1),
+                                   sp.record(id=5, vote_amount=1),
+                                   sp.record(id=10, vote_amount=0),
+                                   sp.record(id=11, vote_amount=0),
+                                   sp.record(id=12, vote_amount=0),
+                                   sp.record(id=14, vote_amount=0),
+                                   sp.record(id=13, vote_amount=0)]).run(sender=bob, valid=False)
+
+    the_vote.provide_sorted_votes([sp.record(id=7, vote_amount=12),
+                                   sp.record(id=9, vote_amount=10),
+                                   sp.record(id=8, vote_amount=10),
+                                   sp.record(id=6, vote_amount=1),
+                                   sp.record(id=5, vote_amount=1),
+                                   sp.record(id=14, vote_amount=0),
+                                   sp.record(id=11, vote_amount=0),
+                                   sp.record(id=12, vote_amount=0),
+                                   sp.record(id=10, vote_amount=0),
+                                   sp.record(id=13, vote_amount=0)]).run(sender=bob)
+
+    scenario.h3("now we mint the 2 NFTs")
+    the_vote.mint_artworks(2).run(sender=bob)
+    scenario.h3("Check that mint and providing sorted votes now do not work anymore")
+    the_vote.mint_artworks(2).run(sender=bob, valid = False)
+
+    the_vote.provide_sorted_votes([sp.record(id=7, vote_amount=12),
+                                   sp.record(id=9, vote_amount=10),
+                                   sp.record(id=8, vote_amount=10),
+                                   sp.record(id=6, vote_amount=1),
+                                   sp.record(id=5, vote_amount=1),
+                                   sp.record(id=14, vote_amount=0),
+                                   sp.record(id=11, vote_amount=0),
+                                   sp.record(id=12, vote_amount=0),
+                                   sp.record(id=10, vote_amount=0),
+                                   sp.record(id=13, vote_amount=0)]).run(sender=bob, valid=False)
+
+    @sp.add_test(name="Edgecase THE_VOTE No Artwork")
+    def test():
+        scenario = sp.test_scenario()
+        scenario.h1("Edgecase THE_VOTE No Artwork")
+        scenario.table_of_contents()
+
+        admin = sp.test_account("Administrator")
+        admin_address = admin.address;
+
+        fa2 = TokensContract(admin_address)
+        scenario += fa2
+
+        voter_money_pool = VoterMoneyPoolContract(admin_address)
+        scenario += voter_money_pool
+
+        auction_house = AuctionHouseContract(administrator=admin_address,
+                                             voter_money_pool=voter_money_pool.address,
+                                             blckbook_collector=admin_address,
+                                             tokens_contract_address=fa2.address)
+        scenario += auction_house
+
+        the_vote = TheVote(administrator=admin_address,
+                           tokens_contract_address=fa2.address,
+                           auction_house_address=auction_house.address,
+                           voter_money_pool_address=voter_money_pool.address)
+        scenario += the_vote
+
+        bob = sp.test_account("Bob")
+
+        scenario.h3("A late admission did not make it")
+        scenario += the_vote.admission(metadata=metadata, uploader=bob.address).run(sender=admin, valid=False, now = sp.timestamp(0).add_days(8))
+
+        scenario.h3("Let the admission time begin without a single admission")
+        the_vote.provide_sorted_votes([]).run(sender=admin, now = sp.timestamp(0).add_days(8))
+        scenario += the_vote.mint_artworks(0).run(sender=admin)
+
+        scenario.h3("Now the admission will make it")
+        scenario += the_vote.admission(metadata=metadata, uploader=bob.address).run(sender=admin)
+        the_vote.provide_sorted_votes([sp.record(id=0, vote_amount=0)]).run(sender=admin,  now = sp.timestamp(0).add_days(16))
+        scenario += the_vote.mint_artworks(0).run(sender=admin)
+
+    #
+    # TODO:
+    #  1. implement the $PRAY Bank (with tests)
+    #  2. tests the interactions of all contracts with each other (from the vote to the payout of the auctions)
