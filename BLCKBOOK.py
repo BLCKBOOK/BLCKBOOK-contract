@@ -820,6 +820,69 @@ metadata_base = {
     },
 }
 
+class SprayBank(sp.Contract):
+    def __init__(self, administrator, spray_address):
+        sp.set_type(administrator, sp.TAddress)
+        sp.set_type(spray_address, sp.TAddress)
+
+        self.init_type(sp.TRecord(
+            administrator=sp.TAddress,
+            spray_address=sp.TAddress,
+            withdrawls=sp.TBigMap(sp.TAddress, sp.TNat),
+            next_period_end=sp.TTimestamp,
+            withdraw_amount=sp.TNat,
+            withdraw_period=sp.TNat
+        ))
+
+        self.init(
+            administrator=administrator,
+            spray_address=spray_address,
+            withdrawls=sp.big_map(
+                tkey=sp.TAddress,
+                tvalue=sp.TNat
+            ),
+            next_period_end=sp.now.add_days(7),
+            withdraw_amount=sp.nat(5),
+            withraw_period=sp.nat(1),
+            # we start with 1, so we can have 0 as a default value for someone who has not withdrawn
+        )
+
+    @sp.entry_point
+    def set_administrator(self, params):
+        sp.verify(sp.sender == self.data.administrator, '$PRAY_BANK_NOT_ADMIN')
+        self.data.administrator = params
+
+    @sp.entry_point
+    def set_spray_address(self, params):
+        sp.verify(sp.sender == self.data.administrator, '$PRAY_BANK_NOT_ADMIN')
+        self.data.spray_address = params
+
+    @sp.entry_point
+    def set_withdraw_amount(self, params):
+        sp.verify(sp.sender == self.data.administrator, '$PRAY_BANK_NOT_ADMIN')
+        self.data.withdraw_amount = params
+
+    @sp.entry_point
+    def set_new_period(self, params):
+        sp.verify(sp.sender == self.data.administrator, '$PRAY_BANK_NOT_ADMIN')
+        sp.verify(params > sp.now, '$PRAY_BANK_END_MUST_BE_IN_THE_FUTURE')
+        self.data.next_period_end = params
+        self.data.withdraw_period += 1
+
+    @sp.entry_point
+    def withdraw(self):
+        sp.verify(self.data.next_period_end > sp.now, '$PRAY_BANK_WAIT_NEXT_PERIOD')
+        sp.verify(self.data.withdraw_period > self.data.withdrawls.get(sp.sender, sp.nat(0)), '$PRAY_BANK_ALREADY_WITHDRAWN')
+        spray_contract = sp.contract(BatchTransfer.get_type(), self.data.spray_address,
+                                     entry_point="transfer").open_some()
+
+        # we now transfer the $PRAY tokens to the contract itself
+        sp.transfer([BatchTransfer.item(sp.self_address, [
+            sp.record(to_=sp.sender, token_id=0, amount=self.data.withdraw_amount)])],
+                sp.mutez(0), spray_contract)
+        self.data.withdrawls[sp.sender] = self.data.withdraw_period
+
+
 class TheVote(sp.Contract):
     def __init__(self, administrator, tokens_contract_address, auction_house_address, voter_money_pool_address):
         sp.set_type_expr(administrator, sp.TAddress)
@@ -971,7 +1034,7 @@ class TheVote(sp.Contract):
         self.data.voter_money_pool_address = params
 
     @sp.entry_point
-    def admission(self, metadata, uploader, previous):
+    def admission(self, metadata, uploader):
         """
         Add an artwork so it can be voted for in the next cycle. Only admin can do this
         """
@@ -1076,8 +1139,6 @@ class TheVote(sp.Contract):
 
         sp.verify(sp.now > self.data.deadline, "THE_VOTE_ADMISSION_HAS_NOT_PASSED")
         sp.verify(~self.data.ready_for_minting, "THE_VOTE_ALREADY_READY_FOR_MINTING")
-
-        current_index = sp.local("current_index", sp.nat(0))
         quotient = sp.local("quotient", self.data.admissions_this_period // self.data.divisor)
 
         self.data.artworks_to_mint = sp.set({}, t=sp.TNat)
@@ -2133,7 +2194,7 @@ def test():
     scenario.h3("Provide wrong next")
     the_vote.vote(artwork_id = 0, amount = 1, index = 0, new_next = sp.variant("index", 0), new_previous = sp.variant("end", sp.unit)).run(sender=bob, valid=False)
     the_vote.vote(artwork_id = 0, amount = 1, index = 0, new_next = sp.variant("index", 1), new_previous = sp.variant("end", sp.unit)).run(sender=bob, valid=False)
-@sp.add_test(name = "Provide Sorted Vote List Test")
+@sp.add_test(name = "Test voting-functionality")
 def test():
 
     scenario = sp.test_scenario()
@@ -2288,8 +2349,24 @@ def test():
         the_vote.setup_data_for_voting().run(sender=admin,  now = sp.timestamp(0).add_days(16))
         the_vote.mint_artworks(0).run(sender=admin)
 
-    #
+    # cases for tests: (artwork_id = 7, amount = 12, index = 2, new_next = sp.variant("index", 0), new_previous = sp.variant("end", sp.unit))
+    # TODO:
+    #   1. artwork_id wrong but rest is correct
+    #   2. amount is higher than it can be (not enough balance)
+    #   3. amount is 0
+    #   4. index is old
+    #   5. index is out_of_bound
+    #   6. index is of another artwork but the new_next and new_previous are correct (should be the same as test 1)
+    #   7. new_next is wrong
+    #   7.1. new_next is end
+    #   7.2. new_next is index
+    #   7.2.1 index is too big
+    #   7.2.2 index is too small
+    #   7.2.3 index would not be a stable sort
+    #   8 new_previous is wrong (see all checks for the other)
+    #   9 become the new highest voted (artwork)
+    #   10 get voted for and remain the lowest_voted artwork (kind of sad)
     # TODO:
     #  0. add more tests for voting. Edge-Cases and wrongly sorted votes that should fail (all possibilities)
-    #  1. implement the $PRAY Bank (with tests)
+    #  1. write tests for the $PRAY-Bank
     #  2. tests the interactions of all contracts with each other (from the vote to the payout of the auctions)
