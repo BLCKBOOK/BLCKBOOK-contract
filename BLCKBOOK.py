@@ -663,21 +663,18 @@ class FA2Spray(sp.Contract):
                 sp.verify(tx.token_id < self.data.next_token_id, "FA2_TOKEN_UNDEFINED")
                 from_ = (transfer.from_, tx.token_id)
                 to_ = (tx.to_, tx.token_id)
-                sp.verify(
-                    (transfer.from_ == sp.sender)
-                    | self.data.operators.contains(
-                        sp.record(
-                            owner=transfer.from_,
-                            operator=sp.sender,
-                            token_id=tx.token_id,
-                        ))
-                    | (self.data.the_vote == sp.sender), # the vote can transfer anything
-                    "FA2_NOT_OPERATOR",
-                )
+
+                sp.verify((sp.sender == transfer.from_) 
+                | self.data.operators.contains(sp.record(owner=transfer.from_, operator=sp.sender, token_id=tx.token_id)) 
+                # We allow the_vote to transmit all tokens
+                | (sp.sender == self.data.the_vote), message="FA2_NOT_OPERATOR")
+
+                # reduce the amount and see if it is still >= 0
                 self.data.ledger[from_] = sp.as_nat(
                     self.data.ledger.get(from_, 0) - tx.amount,
-                    "FA2_INSUFFICIENT_BALANCE",
+                    message="FA2_INSUFFICIENT_BALANCE",
                 )
+                #  add the amount to the "to"
                 self.data.ledger[to_] = self.data.ledger.get(to_, 0) + tx.amount
 
     @sp.entry_point
@@ -821,50 +818,61 @@ metadata_base = {
 }
 
 class SprayBank(sp.Contract):
-    def __init__(self, administrator, spray_address):
-        sp.set_type(administrator, sp.TAddress)
-        sp.set_type(spray_address, sp.TAddress)
-
+    def __init__(self, administrator, spray_address, the_vote_address):
         self.init_type(sp.TRecord(
             administrator=sp.TAddress,
             spray_address=sp.TAddress,
+            the_vote_address=sp.TAddress,
             withdrawls=sp.TBigMap(sp.TAddress, sp.TNat),
             next_period_end=sp.TTimestamp,
             withdraw_amount=sp.TNat,
-            withdraw_period=sp.TNat
+            withdraw_period=sp.TNat,
         ))
 
         self.init(
             administrator=administrator,
             spray_address=spray_address,
+            the_vote_address=the_vote_address,
             withdrawls=sp.big_map(
                 tkey=sp.TAddress,
                 tvalue=sp.TNat
             ),
             next_period_end=sp.now.add_days(7),
             withdraw_amount=sp.nat(5),
-            withraw_period=sp.nat(1),
+            withdraw_period=sp.nat(1),
             # we start with 1, so we can have 0 as a default value for someone who has not withdrawn
         )
 
     @sp.entry_point
     def set_administrator(self, params):
         sp.verify(sp.sender == self.data.administrator, '$PRAY_BANK_NOT_ADMIN')
+        sp.set_type(params, sp.TAddress)
         self.data.administrator = params
 
     @sp.entry_point
     def set_spray_address(self, params):
         sp.verify(sp.sender == self.data.administrator, '$PRAY_BANK_NOT_ADMIN')
+        sp.set_type(params, sp.TAddress)
         self.data.spray_address = params
 
     @sp.entry_point
-    def set_withdraw_amount(self, params):
+    def set_the_vote_address(self, params):
         sp.verify(sp.sender == self.data.administrator, '$PRAY_BANK_NOT_ADMIN')
+        sp.set_type(params, sp.TAddress)
+        self.data.the_vote_address = params
+
+    @sp.entry_point
+    def set_withdraw_amount(self, params):
+        sp.set_type(params, sp.TNat)
+        sp.verify(sp.sender == self.data.administrator, '$PRAY_BANK_NOT_ADMIN')
+        sp.verify(params > sp.nat(0), '$PRAY_BANK_WITHDRAW_0')
         self.data.withdraw_amount = params
 
     @sp.entry_point
     def set_new_period(self, params):
-        sp.verify(sp.sender == self.data.administrator, '$PRAY_BANK_NOT_ADMIN')
+        sp.if sp.sender != self.data.administrator:
+            sp.verify(sp.sender == self.data.the_vote_address, '$PRAY_BANK_NOT_ADMIN_NOR_THE_VOTE')
+        sp.set_type(params, sp.TTimestamp)
         sp.verify(params > sp.now, '$PRAY_BANK_END_MUST_BE_IN_THE_FUTURE')
         self.data.next_period_end = params
         self.data.withdraw_period += 1
@@ -872,24 +880,19 @@ class SprayBank(sp.Contract):
     @sp.entry_point
     def withdraw(self):
         sp.verify(self.data.next_period_end > sp.now, '$PRAY_BANK_WAIT_NEXT_PERIOD')
+        # 0 is the default value if someone has not withdrawn it is always smaller than the withdraw_period
         sp.verify(self.data.withdraw_period > self.data.withdrawls.get(sp.sender, sp.nat(0)), '$PRAY_BANK_ALREADY_WITHDRAWN')
         spray_contract = sp.contract(BatchTransfer.get_type(), self.data.spray_address,
                                      entry_point="transfer").open_some()
 
-        # we now transfer the $PRAY tokens to the contract itself
+        # we now transfer the $PRAY tokens to the sender
         sp.transfer([BatchTransfer.item(sp.self_address, [
             sp.record(to_=sp.sender, token_id=0, amount=self.data.withdraw_amount)])],
                 sp.mutez(0), spray_contract)
         self.data.withdrawls[sp.sender] = self.data.withdraw_period
 
-
 class TheVote(sp.Contract):
-    def __init__(self, administrator, tokens_contract_address, auction_house_address, voter_money_pool_address):
-        sp.set_type_expr(administrator, sp.TAddress)
-        sp.set_type_expr(tokens_contract_address, sp.TAddress)
-        sp.set_type_expr(auction_house_address, sp.TAddress)
-        sp.set_type_expr(voter_money_pool_address, sp.TAddress)
-
+    def __init__(self, administrator, tokens_contract_address, auction_house_address, voter_money_pool_address, spray_bank_address):
         list_of_views = [
         ]
 
@@ -914,6 +917,7 @@ class TheVote(sp.Contract):
             spray_contract_address=sp.TAddress,
             auction_house_address=sp.TAddress,
             voter_money_pool_address=sp.TAddress,
+            spray_bank_address=sp.TAddress,
             all_artworks=sp.TNat,
             metadata=sp.TBigMap(sp.TString, sp.TBytes),
             artwork_data=sp.TBigMap(sp.TNat, sp.TRecord(artwork_info=sp.TMap(sp.TString, sp.TBytes), uploader=sp.TAddress)),
@@ -937,6 +941,7 @@ class TheVote(sp.Contract):
             spray_contract_address=tokens_contract_address,
             auction_house_address=auction_house_address,
             voter_money_pool_address=voter_money_pool_address,
+            spray_bank_address=spray_bank_address,
             all_artworks=0,
             metadata=sp.big_map(tkey=sp.TString, tvalue=sp.TBytes),
             artwork_data=sp.big_map(
@@ -1024,6 +1029,14 @@ class TheVote(sp.Contract):
         """
         sp.verify(sp.sender == self.data.administrator, 'THE_VOTE_NOT_ADMIN')
         self.data.tokens_contract_address = params
+
+    @sp.entry_point
+    def set_spray_bank_address(self, params):
+        """
+        Entry-Point for setting the Spray Bank Address
+        """
+        sp.verify(sp.sender == self.data.administrator, 'THE_VOTE_NOT_ADMIN')
+        self.data.spray_bank_address = params
 
     @sp.entry_point
     def set_voter_money_pool_address(self, params):
@@ -1130,103 +1143,129 @@ class TheVote(sp.Contract):
             sp.record(to_ = sp.self_address, token_id = 0, amount = amount)])],
                     sp.mutez(0), spray_contract)
 
-
-    @sp.entry_point
-    def setup_data_for_voting(self):
-        """
-        This will setup a data-structure of the artworks that should be minted
-        """
-
-        sp.verify(sp.now > self.data.deadline, "THE_VOTE_ADMISSION_HAS_NOT_PASSED")
-        sp.verify(~self.data.ready_for_minting, "THE_VOTE_ALREADY_READY_FOR_MINTING")
-        quotient = sp.local("quotient", self.data.admissions_this_period // self.data.divisor)
-
-        self.data.artworks_to_mint = sp.set({}, t=sp.TNat)
-        
-        sp.if self.data.admissions_this_period > 0:
-            x = sp.local("x", sp.nat(0))
-            next_index = sp.local("next_index", self.data.highest_vote_index)
-
-            sp.while x.value <= quotient.value:
-                self.data.artworks_to_mint.add(self.data.vote_count[next_index.value].artwork_id)
-                x.value += 1
-                sp.if (self.data.vote_count[next_index.value].next.is_variant("index")):
-                    next_index.value = self.data.vote_count[next_index.value].next.open_variant("index")
-
-        self.data.ready_for_minting = True
-
     @sp.entry_point
     def mint_artworks(self, max_amount):
         """
-        Ends a voting-period
+        Mints artworks that have been voted for
+        The first call will setup a data-structure of the artworks that should be minted this period
+        The last call will clean-up the earlier used data-structures and set the new period in the spray_bank
+        :param max_amount sets how many artworks should be minted with the current call can be 0 to just set the data ready for minting
         """
-        
+
         sp.verify(sp.now > self.data.deadline, "THE_VOTE_ADMISSION_HAS_NOT_PASSED")
+
+        # the first mint call will setup the data for the minting
+        sp.if ~self.data.ready_for_minting:
+            self.data.artworks_to_mint = sp.set({}, t = sp.TNat)
+
+            #if there are no admissions we do not need to continue
+            sp.if self.data.admissions_this_period > 0:
+                quotient = sp.local("quotient", self.data.admissions_this_period // self.data.divisor)
+                # x counts the artworks for minting
+                x = sp.local("x", sp.nat(0))
+                # set the next_index to the highest vote index (the votes are sorted)
+                next_index = sp.local("next_index", self.data.highest_vote_index)
+
+                # we do <= here to have at least one artwork be minted. So even if the value is 0 we mint 1 artwork
+                sp.while x.value <= quotient.value:
+                    # add the artwork to mint (its id)
+                    self.data.artworks_to_mint.add(self.data.vote_count[next_index.value].artwork_id)
+                    # increase x
+                    x.value += 1
+                    # we can only set the next_index if the variant is "index" (only matters for having 1 admission only)
+                    sp.if (self.data.vote_count[next_index.value].next.is_variant("index")):
+                        # set the next_index to the next of the current highest_index
+                        next_index.value = self.data.vote_count[next_index.value].next.open_variant("index")
+            self.data.ready_for_minting = True
+
         sp.verify(self.data.ready_for_minting, "THE_VOTE_NOT_READY_FOR_MINTING")
         sp.set_type_expr(max_amount, sp.TNat)
 
+        # current_index is the amount of artworks we have minted this call
         current_index = sp.local("current_index", sp.nat(0))
 
+        # token_index is the index of the next FA2-Token we want to mint. We are calling the on-chain view for this
         token_index = sp.local("token_index", sp.view("count_tokens", self.data.tokens_contract_address, sp.unit, sp.TNat).open_some("THE_VOTE_INVALID_VIEW"))
 
-        sp.for artwork in self.data.artworks_to_mint.elements():
-            sp.if (current_index.value < max_amount):
-                token_contract = sp.contract(
-                    sp.TRecord(amount = sp.TNat, token_id = sp.TNat, address = sp.TAddress, metadata = sp.TMap(sp.TString, sp.TBytes)),
-                    self.data.tokens_contract_address,
-                    entry_point="mint").open_some()
+        # set the token-contract for minting the token (does not have to be in the loop)
+        token_contract = sp.contract(
+            sp.TRecord(amount=sp.TNat, token_id=sp.TNat, address=sp.TAddress, metadata=sp.TMap(sp.TString, sp.TBytes)),
+            self.data.tokens_contract_address,
+            entry_point="mint").open_some()
 
+        # set the auction_house_contract for setting creating the auction (does not have to be in the loop)
+        auction_house_contract = sp.contract(
+            sp.TRecord(auction_and_token_id=sp.TNat, end_timestamp=sp.TTimestamp, voter_amount=sp.TNat,
+                       uploader=sp.TAddress, bid_amount=sp.TMutez),
+            self.data.auction_house_address,
+            entry_point="create_auction").open_some()
+
+        # set the voter_money_pool_contract for transmitting the votes to it (does not have to be in the loop)
+        voter_money_pool_contract = sp.contract(
+            sp.TRecord(voter_addresses=sp.TList(sp.TAddress), auction_and_token_id=sp.TNat),
+            self.data.voter_money_pool_address,
+            entry_point="add_votes").open_some()
+
+
+        # iterate over all artworks_to_mint
+        sp.for artwork_id in self.data.artworks_to_mint.elements():
+            # check whether we already minted the amount of artworks we wanted to mint
+            sp.if current_index.value < max_amount:
+                # mint the NFT
+                # current_index + token_index is the index that the NFT will have (not the vote-index!)
                 sp.transfer(sp.record(amount= sp.nat(1),
                                       token_id = current_index.value + token_index.value,
                                       address=self.data.auction_house_address,
-                                      metadata= self.data.artwork_data[artwork].artwork_info),
+                                      metadata= self.data.artwork_data[artwork_id].artwork_info),
                     sp.mutez(0),
                     token_contract,
                 )
-
-                auction_house_contract = sp.contract(
-                    sp.TRecord(auction_and_token_id = sp.TNat, end_timestamp = sp.TTimestamp, voter_amount = sp.TNat, uploader = sp.TAddress, bid_amount=sp.TMutez),
-                    self.data.auction_house_address,
-                    entry_point="create_auction").open_some()
-
+                # create the Auction for it
                 sp.transfer(
                     sp.record(auction_and_token_id = current_index.value + token_index.value,
                               end_timestamp = sp.now.add_days(7),
-                              voter_amount = sp.len(self.data.vote_register.get(artwork).elements()),
-                              uploader = self.data.artwork_data[artwork].uploader,
+                              voter_amount = sp.len(self.data.vote_register.get(artwork_id).elements()),
+                              uploader = self.data.artwork_data[artwork_id].uploader,
                               bid_amount=sp.mutez(1000000)),
                     sp.mutez(0),
                     auction_house_contract,
                 )
-
-                voter_money_pool_contract = sp.contract(sp.TRecord(voter_addresses=sp.TList(sp.TAddress), auction_and_token_id=sp.TNat), self.data.voter_money_pool_address,
-                                                        entry_point="add_votes").open_some()
+                # and transmit the votes to the voter_money_pool
                 sp.transfer(
-                    sp.record(voter_addresses=self.data.vote_register[artwork].elements(), auction_and_token_id= current_index.value + token_index.value),
+                    sp.record(voter_addresses=self.data.vote_register[artwork_id].elements(), auction_and_token_id= current_index.value + token_index.value),
                     sp.mutez(0),
                     voter_money_pool_contract,
                 )
 
+                # increase the current_index (so we can mint the next nft)
                 current_index.value += 1
 
-                del self.data.artwork_data[artwork]
-                del self.data.vote_register[artwork]
-                self.data.artworks_to_mint.remove(artwork)
+                # remove the artwork we just minted from the artworks_to_mint
+                self.data.artworks_to_mint.remove(artwork_id)
 
+        # this means we minted all or there was nothing to mint, so we can start the next voting_cycle and reset the data
         sp.if sp.len(self.data.artworks_to_mint.elements()) == 0:
-            # this means we minted all or there was nothing to mint, so we now reset everything
+
             self.data.deadline = sp.now.add_days(7)
             self.data.ready_for_minting = False
-            self.data.highest_vote_index=sp.nat(0)
-            self.data.lowest_vote_index=sp.nat(0)
+            self.data.highest_vote_index = sp.nat(0)
+            self.data.lowest_vote_index = sp.nat(0)
 
-            # we delete the vote_count and also the vote_register as we transmitted them for the winning artworks
-            i = sp.local("i", sp.nat(0))
-            sp.while i.value < self.data.admissions_this_period:
-                del self.data.vote_count[i.value]
-                del self.data.vote_register[i.value]
-                i.value += 1
-            self.data.admissions_this_period=sp.nat(0)
+            # set the spray-bank to the next voting-period so an admin does not have to call this manually
+            spray_bank_address = sp.contract(sp.TTimestamp, self.data.spray_bank_address,
+                                                        entry_point="set_new_period").open_some()
+            sp.transfer(sp.now.add_days(7), sp.mutez(0), spray_bank_address)
+
+            # we reset the vote_count and also the vote_register as we transmitted them for the winning artworks
+            self.data.vote_count = sp.big_map(tkey=sp.TNat, tvalue=sp.TRecord(
+                vote_amount=sp.TNat,
+                next=sp.TVariant(index=sp.TNat, end=sp.TUnit),
+                previous=sp.TVariant(index=sp.TNat, end=sp.TUnit),
+                artwork_id=sp.TNat))
+            self.data.vote_register = sp.big_map(tkey=sp.TNat, tvalue=sp.TSet(sp.TAddress))
+
+            # set the admissions_this_period to 0
+            self.data.admissions_this_period = sp.nat(0)
 
 class TestHelper():
     def make_metadata(symbol, name, decimals):
@@ -1993,7 +2032,7 @@ def test():
         voter_money_pool_address=sp.address('KT1XeA6tZYeBCm7aux3SAPswTuRE72R3VUCW'))
     scenario += the_vote
 
-"""
+
 @sp.add_test(name = "Setting Admins of other contracts through theVote")
 def test():
 
@@ -2019,7 +2058,7 @@ def test():
     the_vote = TheVote(administrator=admin_address,
         tokens_contract_address = fa2.address,
         auction_house_address=auction_house.address,
-        voter_money_pool_address=voter_money_pool.address)
+        voter_money_pool_address=voter_money_pool.address, spray_bank_address=admin_address)
     scenario += the_vote
 
     scenario.h2("Admin Sets for FA2")
@@ -2077,7 +2116,7 @@ def test():
     the_vote = TheVote(administrator=admin_address,
         tokens_contract_address = fa2.address,
         auction_house_address=auction_house.address,
-        voter_money_pool_address=voter_money_pool.address)
+        voter_money_pool_address=voter_money_pool.address, spray_bank_address=admin_address)
     scenario += the_vote
 
     bob = sp.test_account("Bob")
@@ -2092,9 +2131,6 @@ def test():
     the_vote.admission(metadata = metadata, uploader = bob.address).run(sender=bob, valid=False)
     scenario.h3("Admin can")
     the_vote.admission(metadata = metadata, uploader = bob.address).run(sender=admin, valid=True)
-
-
-    fa2_admin = sp.test_account("fa2_admin")
 
 @sp.add_test(name="FA2Spray Test")
 def test():
@@ -2146,7 +2182,8 @@ def test():
     the_vote = TheVote(administrator=admin_address,
         tokens_contract_address = fa2.address,
         auction_house_address=auction_house.address,
-        voter_money_pool_address=voter_money_pool.address)
+        voter_money_pool_address=voter_money_pool.address,
+                       spray_bank_address=admin_address)
     scenario += the_vote
 
     bob = sp.test_account("Bob")
@@ -2194,15 +2231,16 @@ def test():
     scenario.h3("Provide wrong next")
     the_vote.vote(artwork_id = 0, amount = 1, index = 0, new_next = sp.variant("index", 0), new_previous = sp.variant("end", sp.unit)).run(sender=bob, valid=False)
     the_vote.vote(artwork_id = 0, amount = 1, index = 0, new_next = sp.variant("index", 1), new_previous = sp.variant("end", sp.unit)).run(sender=bob, valid=False)
-@sp.add_test(name = "Test voting-functionality")
-def test():
 
+"""
+@sp.add_test(name = "Test SPRAY-Bank")
+def test():
     scenario = sp.test_scenario()
     scenario.h1("Provide Sorted Vote List Test")
     scenario.table_of_contents()
 
-    admin = sp.test_account("Administrator")
-    admin_address = admin.address;
+    admin = sp.test_account("Admin")
+    admin_address = admin.address
 
     fa2 = TokensContract(admin_address)
     scenario += fa2
@@ -2219,7 +2257,84 @@ def test():
     the_vote = TheVote(administrator=admin_address,
                        tokens_contract_address=fa2.address,
                        auction_house_address=auction_house.address,
-                       voter_money_pool_address=voter_money_pool.address)
+                       voter_money_pool_address=voter_money_pool.address,
+                       spray_bank_address=admin_address)
+    scenario += the_vote
+
+    spray = FA2Spray(admin.address, the_vote.address, metadata_base, "https//example.com")
+    scenario += spray
+
+    bank = SprayBank(administrator=admin_address, spray_address=spray.address, the_vote_address=admin_address)
+    scenario += bank
+
+
+    spray_metadata = TestHelper.make_metadata(
+        name="$PRAY",
+        decimals=0,
+        symbol="$PRAY")
+
+    the_vote.set_spray_contract(spray.address).run(sender=admin)
+    the_vote.set_spray_bank_address(bank.address).run(sender=admin)
+    bank.set_the_vote_address(the_vote.address).run(sender=admin)
+    
+    
+    scenario.h2("We create bob and mint some spray tokens for the bank")
+    bob = sp.test_account("Bob")
+    spray.mint(to_=bank.address, amount=10, token=sp.variant("new", spray_metadata)).run(sender=admin)
+    
+    scenario.h2("Bob should be able to withdraw once")
+    bank.withdraw().run(sender=bob)
+    bank.withdraw().run(sender=bob, valid=False)
+
+    scenario.h2("We create alice and check if she can withdraw once")
+    alice = sp.test_account("Alice")
+    bank.withdraw().run(sender=alice)
+    bank.withdraw().run(sender=alice, valid=False)
+
+    scenario.h2("We now create tim who runs out of luck because the bank is empty")
+    tim = sp.test_account("Tim")
+    bank.withdraw().run(sender=tim, valid=False)
+    
+    scenario.h2("check that the withdraw amount cannot be set to 0")
+    bank.set_withdraw_amount(0).run(sender=admin, valid=False)
+    
+    scenario.h2("We mint new spray and let tim withdraw")
+    bank.set_withdraw_amount(999).run(sender=admin)
+    spray.mint(to_=bank.address, amount=1000, token=sp.variant("existing", 0)).run(sender=admin)
+    bank.withdraw().run(sender=tim)
+    scenario.h2("Susan can withdraw if we set the amount to 1")
+    susan = sp.test_account("Susan")
+    bank.withdraw().run(sender=susan, valid=False)
+    bank.set_withdraw_amount(1).run(sender=admin)
+    bank.withdraw().run(sender=susan)
+
+@sp.add_test(name = "Test voting-functionality")
+def test():
+
+    scenario = sp.test_scenario()
+    scenario.h1("Provide Sorted Vote List Test")
+    scenario.table_of_contents()
+
+    admin = sp.test_account("Administrator")
+    admin_address = admin.address
+
+    fa2 = TokensContract(admin_address)
+    scenario += fa2
+
+    voter_money_pool = VoterMoneyPoolContract(admin_address)
+    scenario += voter_money_pool
+
+    auction_house = AuctionHouseContract(administrator=admin_address,
+                                         voter_money_pool=voter_money_pool.address,
+                                         blckbook_collector=admin_address,
+                                         tokens_contract_address=fa2.address)
+    scenario += auction_house
+
+    the_vote = TheVote(administrator=admin_address,
+                       tokens_contract_address=fa2.address,
+                       auction_house_address=auction_house.address,
+                       voter_money_pool_address=voter_money_pool.address,
+                       spray_bank_address=admin_address)
     scenario += the_vote
 
     bob = sp.test_account("Bob")
@@ -2253,11 +2368,8 @@ def test():
     scenario.h3("we mint the first $PRAY for bob")
     spray.mint(to_=bob.address, amount=1000, token=sp.variant("new", spray_metadata)).run(sender=admin)
 
-    scenario.h3("we get the contract ready for minting")
-    the_vote.setup_data_for_voting().run(sender=bob, now = sp.timestamp(0).add_days(8))
-
     scenario.h3("now we mint the wining artwork, that did not get any votes")
-    the_vote.mint_artworks(1).run(sender=bob)
+    the_vote.mint_artworks(1).run(sender=bob, now = sp.timestamp(0).add_days(8))
 
     scenario.h3("now bob can not vote on these artworks anymore")
     the_vote.vote(artwork_id = 0, amount = 1, index = 0, new_next = sp.variant("index", 1), new_previous = sp.variant("end", sp.unit)).run(sender=bob, valid=False)
@@ -2277,7 +2389,7 @@ def test():
     the_vote.admission(metadata=metadata, uploader=bob.address).run(sender=admin, valid=True)
     the_vote.admission(metadata=metadata, uploader=bob.address).run(sender=admin, valid=True)
     the_vote.admission(metadata=metadata, uploader=bob.address).run(sender=admin, valid=True)
-    
+
     scenario.h3("now bob votes on these new artworks")
 
     the_vote.vote(artwork_id = 5, amount = 1, index = 0, new_next = sp.variant("index", 1), new_previous = sp.variant("end", sp.unit)).run(
@@ -2299,55 +2411,58 @@ def test():
 
     scenario.h3("we now send different votes to test the algorithm")
 
-    the_vote.setup_data_for_voting().run(sender=bob, now = sp.timestamp(0).add_days(16))
 
     scenario.h3("now we mint the 2 NFTs")
-    the_vote.mint_artworks(2).run(sender=bob)
+    the_vote.mint_artworks(2).run(sender=bob, now = sp.timestamp(0).add_days(16))
     scenario.h3("Check that mint and setting up voting data does not work anymore")
     the_vote.mint_artworks(2).run(sender=bob, valid = False)
 
-    the_vote.setup_data_for_voting().run(sender=bob, valid=False)
+    the_vote.mint_artworks(0).run(sender=bob, valid=False)
 
-    @sp.add_test(name="Edgecase THE_VOTE No Artwork")
-    def test():
-        scenario = sp.test_scenario()
-        scenario.h1("Edgecase THE_VOTE No Artwork")
-        scenario.table_of_contents()
+@sp.add_test(name="Edgecase THE_VOTE No Artwork")
+def test():
+    scenario = sp.test_scenario()
+    scenario.h1("Edgecase THE_VOTE No Artwork")
+    scenario.table_of_contents()
 
-        admin = sp.test_account("Administrator")
-        admin_address = admin.address;
+    admin = sp.test_account("Administrator")
+    admin_address = admin.address;
 
-        fa2 = TokensContract(admin_address)
-        scenario += fa2
+    fa2 = TokensContract(admin_address)
+    scenario += fa2
 
-        voter_money_pool = VoterMoneyPoolContract(admin_address)
-        scenario += voter_money_pool
+    voter_money_pool = VoterMoneyPoolContract(admin_address)
+    scenario += voter_money_pool
 
-        auction_house = AuctionHouseContract(administrator=admin_address,
-                                             voter_money_pool=voter_money_pool.address,
-                                             blckbook_collector=admin_address,
-                                             tokens_contract_address=fa2.address)
-        scenario += auction_house
+    auction_house = AuctionHouseContract(administrator=admin_address,
+                                         voter_money_pool=voter_money_pool.address,
+                                         blckbook_collector=admin_address,
+                                         tokens_contract_address=fa2.address)
+    scenario += auction_house
 
-        the_vote = TheVote(administrator=admin_address,
-                           tokens_contract_address=fa2.address,
-                           auction_house_address=auction_house.address,
-                           voter_money_pool_address=voter_money_pool.address)
-        scenario += the_vote
+    the_vote = TheVote(administrator=admin_address,
+                       tokens_contract_address=fa2.address,
+                       auction_house_address=auction_house.address,
+                       voter_money_pool_address=voter_money_pool.address,
+                       spray_bank_address=admin_address)
+    scenario += the_vote
 
-        bob = sp.test_account("Bob")
+    bob = sp.test_account("Bob")
+    metadata = TestHelper.make_metadata(
+        name = "Bobs Spot",
+        decimals = 0,
+        symbol= "TK0")
 
-        scenario.h3("A late admission did not make it")
-        the_vote.admission(metadata=metadata, uploader=bob.address).run(sender=admin, valid=False, now = sp.timestamp(0).add_days(8))
+    scenario.h3("A late admission did not make it")
+    the_vote.admission(metadata=metadata, uploader=bob.address).run(sender=admin, valid=False,
+                                                                now=sp.timestamp(0).add_days(8))
 
-        scenario.h3("Let the admission time begin without a single admission")
-        the_vote.setup_data_for_voting().run(sender=admin, now = sp.timestamp(0).add_days(8))
-        the_vote.mint_artworks(0).run(sender=admin)
+    scenario.h3("Let the admission time end without a single admission")
+    the_vote.mint_artworks(0).run(sender=admin, now=sp.timestamp(0).add_days(8))
 
-        scenario.h3("Now the admission will make it")
-        the_vote.admission(metadata=metadata, uploader=bob.address).run(sender=admin)
-        the_vote.setup_data_for_voting().run(sender=admin,  now = sp.timestamp(0).add_days(16))
-        the_vote.mint_artworks(0).run(sender=admin)
+    scenario.h3("Now the admission will make it")
+    the_vote.admission(metadata=metadata, uploader=bob.address).run(sender=admin)
+    the_vote.mint_artworks(0).run(sender=admin, now=sp.timestamp(0).add_days(16))
 
     # cases for tests: (artwork_id = 7, amount = 12, index = 2, new_next = sp.variant("index", 0), new_previous = sp.variant("end", sp.unit))
     # TODO:
