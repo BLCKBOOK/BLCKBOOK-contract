@@ -664,8 +664,8 @@ class FA2Spray(sp.Contract):
                 from_ = (transfer.from_, tx.token_id)
                 to_ = (tx.to_, tx.token_id)
 
-                sp.verify((sp.sender == transfer.from_) 
-                | self.data.operators.contains(sp.record(owner=transfer.from_, operator=sp.sender, token_id=tx.token_id)) 
+                sp.verify((sp.sender == transfer.from_)
+                | self.data.operators.contains(sp.record(owner=transfer.from_, operator=sp.sender, token_id=tx.token_id))
                 # We allow the_vote to transmit all tokens
                 | (sp.sender == self.data.the_vote), message="FA2_NOT_OPERATOR")
 
@@ -918,14 +918,14 @@ class TheVote(sp.Contract):
             auction_house_address=sp.TAddress,
             voter_money_pool_address=sp.TAddress,
             spray_bank_address=sp.TAddress,
-            all_artworks=sp.TNat,
-            metadata=sp.TBigMap(sp.TString, sp.TBytes),
-            artwork_data=sp.TBigMap(sp.TNat, sp.TRecord(artwork_info=sp.TMap(sp.TString, sp.TBytes), uploader=sp.TAddress)),
-            vote_count=sp.TBigMap(sp.TNat, sp.TRecord(
+            votes=sp.TBigMap(sp.TNat, sp.TRecord(
                 vote_amount=sp.TNat,
                 next=sp.TVariant(index=sp.TNat, end=sp.TUnit),
                 previous=sp.TVariant(index=sp.TNat, end=sp.TUnit),
                 artwork_id=sp.TNat)),
+            all_artworks=sp.TNat,
+            metadata=sp.TBigMap(sp.TString, sp.TBytes),
+            artwork_data=sp.TBigMap(sp.TNat, sp.TRecord(artwork_info=sp.TMap(sp.TString, sp.TBytes), uploader=sp.TAddress)),
             highest_vote_index=sp.TNat,
             lowest_vote_index=sp.TNat,
             admissions_this_period=sp.TNat,
@@ -942,19 +942,17 @@ class TheVote(sp.Contract):
             auction_house_address=auction_house_address,
             voter_money_pool_address=voter_money_pool_address,
             spray_bank_address=spray_bank_address,
-            all_artworks=0,
+            votes=sp.big_map(tkey=sp.TNat, tvalue=sp.TRecord(
+                vote_amount=sp.TNat,
+                next=sp.TVariant(index=sp.TNat, end=sp.TUnit),
+                previous=sp.TVariant(index=sp.TNat, end=sp.TUnit),
+                artwork_id=sp.TNat)),
+            all_artworks=sp.nat(0),
             metadata=sp.big_map(tkey=sp.TString, tvalue=sp.TBytes),
             artwork_data=sp.big_map(
                 tkey=sp.TNat,
                 tvalue=sp.TRecord(artwork_info=sp.TMap(sp.TString, sp.TBytes), uploader=sp.TAddress)
             ),
-            # if vote_count is set to 0 for an artwork we say that it is approved.
-            # Approval is done either off-chain or it can be done-on-chain if somebody submitted on-chain
-            vote_count=sp.big_map(tkey=sp.TNat, tvalue=sp.TRecord(
-                vote_amount=sp.TNat,
-                next=sp.TVariant(index=sp.TNat, end=sp.TUnit),
-                previous=sp.TVariant(index=sp.TNat, end=sp.TUnit),
-                artwork_id=sp.TNat)),
             highest_vote_index=sp.nat(0),
             lowest_vote_index=sp.nat(0),
             admissions_this_period=sp.nat(0),
@@ -1060,15 +1058,15 @@ class TheVote(sp.Contract):
         self.data.artwork_data[self.data.all_artworks] = sp.record(artwork_info = metadata, uploader = uploader)
 
         sp.if self.data.admissions_this_period > sp.nat(0):
-            self.data.vote_count[self.data.lowest_vote_index].next = sp.variant("index", self.data.admissions_this_period)
-            self.data.vote_count[self.data.admissions_this_period] = sp.record(
+            self.data.votes[self.data.lowest_vote_index].next = sp.variant("index", self.data.admissions_this_period)
+            self.data.votes[self.data.admissions_this_period] = sp.record(
                 vote_amount=sp.nat(0),
                 artwork_id=self.data.all_artworks,
                 next=sp.variant("end", sp.unit),
                 previous=sp.variant("index", self.data.lowest_vote_index),
             )
         sp.else:
-            self.data.vote_count[self.data.admissions_this_period] = sp.record(
+            self.data.votes[self.data.admissions_this_period] = sp.record(
                 vote_amount=sp.nat(0),
                 artwork_id=self.data.all_artworks,
                 next=sp.variant("end", sp.unit),
@@ -1094,46 +1092,70 @@ class TheVote(sp.Contract):
         sp.verify(amount > 0, 'THE_VOTE_AMOUNT_IS_ZERO')
         sp.verify(sp.now < self.data.deadline, "THE_VOTE_DEADLINE_PASSED")
 
-        old_data = sp.local("old_data", self.data.vote_count[index])
+        old_data = sp.local("old_data", self.data.votes[index])
         new_vote_amount = sp.local("new_vote_amount", old_data.value.vote_amount + amount)
-        sp.verify(old_data.value.artwork_id == artwork_id, "artwork_id not the same")
+
+        sp.verify(old_data.value.artwork_id == artwork_id, "THE_VOTE_WRONG_ARTWORK_ID")
 
         sp.if new_previous.is_variant("end"):
             # the new previous is 0 that means we now have the highest value
-            sp.verify(self.data.vote_count[self.data.highest_vote_index].vote_amount < new_vote_amount.value, "THE_VOTE_NOT_HIGHEST_VOTE_AMOUNT")
+            sp.verify(self.data.votes[self.data.highest_vote_index].vote_amount < new_vote_amount.value, "THE_VOTE_NOT_HIGHEST_VOTE_AMOUNT")
+            # set the previous of the formerly highest vote index to the new highest_vote_index
+            sp.if index == self.data.highest_vote_index:
+                # we also were the highest_vote_index before. Assure that the next does not change
+                sp.verify(old_data.value.next == new_next, "THE_VOTE_WRONG_NEXT")
+            sp.else:
+                # we weren't the highest vote amount before (this only works if there is more than 1 artwork)
+                # make sure that our new next is the previously highest rated artwork
+                sp.verify(new_next.open_variant("index") == self.data.highest_vote_index, "THE_VOTE_WRONG_NEXT_HIGHEST_AMOUNT")
+                # now set the previous of the formerly highest rated artwork
+                self.data.votes[self.data.highest_vote_index].previous = sp.variant("index", index)
+            # finally set the highest_vote_index to be us
             self.data.highest_vote_index = index
 
         sp.else:
-            # we do not have the highest amount of votes
-            sp.verify(new_vote_amount.value <= self.data.vote_count[new_previous.open_variant("index")].vote_amount, "THE_VOTE_WRONG_PREVIOUS")
+            # we do not have the highest amount of votes and the new_previous variant is therefore index
+            # test that we have a lower vote amount than our previous (because the list is sorted we do not have to check against the highest amount)
+            sp.verify(new_vote_amount.value <= self.data.votes[new_previous.open_variant("index")].vote_amount, "THE_VOTE_HIGHER_VOTES_THAN_PREVIOUS")
 
             sp.if ~(new_previous.open_variant("index") == old_data.value.previous.open_variant("index")):
-                # we have a changed previous
-                # we verify that the next of the new previous is our new next
-                sp.verify(self.data.vote_count[new_previous.open_variant("index")].next == new_next, "THE_VOTE_WRONG_PLACEMENT")
-                self.data.vote_count[old_data.value.previous.open_variant("index")].next = old_data.value.next
-                # we change the next of our new previous to point to us
-                self.data.vote_count[new_previous.open_variant("index")].next = sp.variant("index", index)
+                # we have a changed previous (we move up in the sort)
+                # we verify that the new_next is of variant index as we moved up in the sort
+                sp.verify(new_next.is_variant("index"), "THE_VOTE_WRONG_NEXT")
+                # now we verify that the old next of the new previous is our new next
+                sp.verify(self.data.votes[new_previous.open_variant("index")].next.open_variant("index") == new_next.open_variant("index"), "THE_VOTE_WRONG_NEXT")
+                # we also verify that our vote_amount is higher than our new_next
+                sp.verify(new_vote_amount.value > self.data.votes[new_next.open_variant("index")].vote_amount, "THE_VOTE_NOT_ENOUGH_VOTES")
+
+                # now we change the next of our old_previous to point to our old_next
+                self.data.votes[old_data.value.previous.open_variant("index")].next = old_data.value.next
                 sp.if old_data.value.next.is_variant("end"):
                     # this means we were the previous lowest index and now it is our formerly previous
                     self.data.lowest_vote_index = old_data.value.previous.open_variant("index")
+                sp.else:
+                    # we had a next element before and need to set it's previous to our old previous
+                    self.data.votes[old_data.value.next.open_variant("index")].previous = old_data.value.previous
+                # we change the next of our new previous to point to us
+                self.data.votes[new_previous.open_variant("index")].next = sp.variant("index", index)
+                # and we change the previous of our new next to point to us
+                self.data.votes[new_next.open_variant("index")].previous = sp.variant("index", index)
 
-        sp.if new_next.is_variant("end"):
-            # so we still have the lowest amounts of votes. For this the lowest pointer must have been on us before
-            sp.verify(self.data.lowest_vote_index == index, "THE_VOTE_NOT_LOWEST_VOTE_AMOUNT")
-            # we do not have the change the lowest vote index here
-        sp.else:
-            # we do not have the lowest amounts of votes
-            sp.verify(new_vote_amount.value > self.data.vote_count[new_next.open_variant("index")].vote_amount, "THE_VOTE_WRONG_NEXT")
-            sp.if ~(new_next.open_variant("index") == old_data.value.next.open_variant("index")):
-                # we have a changed next
-                # we verify that the previous of the new next is our new previous
-                sp.verify(self.data.vote_count[new_next.open_variant("index")].previous == new_previous, "THE_VOTE_WRONG_PLACEMENT")
-                self.data.vote_count[old_data.value.next.open_variant("index")].previous = old_data.value.previous
-                # we change the previous of our new next to point to us
-                self.data.vote_count[new_next.open_variant("index")].previous = sp.variant("index", index)
+            sp.else:
+                # our previous did not change. Therefore our next should not have changed either
+                sp.verify(new_next == old_data.value.next, "THE_VOTE_WRONG_NEXT")
+                # check that we still have a lower (<=) vote_amount than our previous
+                # if the old data previous is not "index" this is also wrong and will abort with an exception
+                sp.verify(new_vote_amount.value <= self.data.votes[old_data.value.previous.open_variant("index")].vote_amount, "THE_VOTE_TOO_MANY_VOTES" )
+                sp.if new_next.is_variant("end"):
+                    # so we still have the lowest amounts of votes. For this the lowest pointer must have been on us before
+                    sp.verify(self.data.lowest_vote_index == index, "THE_VOTE_NOT_LOWEST_VOTE_AMOUNT")
+                # we do not have the change the lowest vote index here
+                sp.else:
+                    # we do not have the lowest amounts of votes and are somewhere in the middle (without having a changed position)
+                    # check that our new_next (which is our old next... does not have a lower vote amount than ours (redudant)
+                    sp.verify(new_vote_amount.value > self.data.votes[new_next.open_variant("index")].vote_amount, "THE_VOTE_WRONG_NEXT")
 
-        self.data.vote_count[index]=sp.record(artwork_id=artwork_id, vote_amount = new_vote_amount.value, next=new_next, previous=new_previous)
+        self.data.votes[index]=sp.record(artwork_id=artwork_id, vote_amount = new_vote_amount.value, next=new_next, previous=new_previous)
 
         spray_contract = sp.contract(BatchTransfer.get_type(), self.data.spray_contract_address,
                                      entry_point="transfer").open_some()
@@ -1169,13 +1191,13 @@ class TheVote(sp.Contract):
                 # we do <= here to have at least one artwork be minted. So even if the value is 0 we mint 1 artwork
                 sp.while x.value <= quotient.value:
                     # add the artwork to mint (its id)
-                    self.data.artworks_to_mint.add(self.data.vote_count[next_index.value].artwork_id)
+                    self.data.artworks_to_mint.add(self.data.votes[next_index.value].artwork_id)
                     # increase x
                     x.value += 1
                     # we can only set the next_index if the variant is "index" (only matters for having 1 admission only)
-                    sp.if (self.data.vote_count[next_index.value].next.is_variant("index")):
+                    sp.if (self.data.votes[next_index.value].next.is_variant("index")):
                         # set the next_index to the next of the current highest_index
-                        next_index.value = self.data.vote_count[next_index.value].next.open_variant("index")
+                        next_index.value = self.data.votes[next_index.value].next.open_variant("index")
             self.data.ready_for_minting = True
 
         sp.verify(self.data.ready_for_minting, "THE_VOTE_NOT_READY_FOR_MINTING")
@@ -1256,8 +1278,8 @@ class TheVote(sp.Contract):
                                                         entry_point="set_new_period").open_some()
             sp.transfer(sp.now.add_days(7), sp.mutez(0), spray_bank_address)
 
-            # we reset the vote_count and also the vote_register as we transmitted them for the winning artworks
-            self.data.vote_count = sp.big_map(tkey=sp.TNat, tvalue=sp.TRecord(
+            # we reset the votes and also the vote_register as we transmitted them for the winning artworks
+            self.data.votes = sp.big_map(tkey=sp.TNat, tvalue=sp.TRecord(
                 vote_amount=sp.TNat,
                 next=sp.TVariant(index=sp.TNat, end=sp.TUnit),
                 previous=sp.TVariant(index=sp.TNat, end=sp.TUnit),
@@ -1282,6 +1304,68 @@ class TestHelper():
         token = sp.set_type_expr(token, sp.TNat)
         result = sp.pair(user, token)
         return result
+
+    def build_contracts(admin, scenario):
+        admin_address = admin.address
+        fa2 = TokensContract(admin_address)
+        scenario += fa2
+
+        voter_money_pool = VoterMoneyPoolContract(admin_address)
+        scenario += voter_money_pool
+
+        auction_house = AuctionHouseContract(administrator=admin_address,
+                                         voter_money_pool=voter_money_pool.address,
+                                         blckbook_collector=admin_address,
+                                         tokens_contract_address=fa2.address)
+        scenario += auction_house
+
+        the_vote = TheVote(administrator=admin_address,
+                       tokens_contract_address=fa2.address,
+                       auction_house_address=auction_house.address,
+                       voter_money_pool_address=voter_money_pool.address,
+                       spray_bank_address=admin_address)
+        scenario += the_vote
+
+        spray = FA2Spray(admin_address, the_vote.address, metadata_base, "https//example.com")
+        scenario += spray
+
+        bank = SprayBank(administrator=admin_address, spray_address=spray.address, the_vote_address=admin_address)
+        scenario += bank
+
+        the_vote.set_spray_contract(spray.address).run(sender=admin)
+        the_vote.set_spray_bank_address(bank.address).run(sender=admin)
+        bank.set_the_vote_address(the_vote.address).run(sender=admin)
+
+        auction_house.set_administrator(the_vote.address).run(sender=admin)
+        voter_money_pool.set_administrator(the_vote.address).run(sender=admin)
+        fa2.set_administrator(the_vote.address).run(sender=admin)
+
+        return (fa2, auction_house, voter_money_pool, the_vote, spray, bank)
+
+    def test_vote(user, the_vote, artwork_id, amount, index, new_next, new_previous):
+        for a_id in range(0, artwork_id + 10):
+            for ind in range(0, index + 10):
+                for n_n in range(-1, index + 10):
+                    for n_p in range(-1, index + 10):
+                        if n_n == -1:
+                            new_n = sp.variant("end", sp.unit)
+                        else:
+                            new_n = sp.variant("index", n_n)
+                        if n_p == -1:
+                            new_p = sp.variant("end", sp.unit)
+                        else:
+                            new_p = sp.variant("index", n_n)
+                        if artwork_id != a_id or ind != index or new_n != new_next or new_p != new_previous:
+                            the_vote.vote(artwork_id=a_id, amount=amount, index=ind, new_next=new_n, new_previous=new_p).run(sender=user, valid=False)
+
+        the_vote.vote(artwork_id=artwork_id, amount=amount, index=index, new_next=new_next,
+                      new_previous=new_previous).run(sender=user, valid=True)
+
+spray_metadata = TestHelper.make_metadata(
+    name="$PRAY",
+    decimals=0,
+    symbol="$PRAY")
+
 
 """
 @sp.add_test(name = "FA2-Contract Test")
@@ -2232,7 +2316,6 @@ def test():
     the_vote.vote(artwork_id = 0, amount = 1, index = 0, new_next = sp.variant("index", 0), new_previous = sp.variant("end", sp.unit)).run(sender=bob, valid=False)
     the_vote.vote(artwork_id = 0, amount = 1, index = 0, new_next = sp.variant("index", 1), new_previous = sp.variant("end", sp.unit)).run(sender=bob, valid=False)
 
-"""
 @sp.add_test(name = "Test SPRAY-Bank")
 def test():
     scenario = sp.test_scenario()
@@ -2240,44 +2323,10 @@ def test():
     scenario.table_of_contents()
 
     admin = sp.test_account("Admin")
-    admin_address = admin.address
-
-    fa2 = TokensContract(admin_address)
-    scenario += fa2
-
-    voter_money_pool = VoterMoneyPoolContract(admin_address)
-    scenario += voter_money_pool
-
-    auction_house = AuctionHouseContract(administrator=admin_address,
-                                         voter_money_pool=voter_money_pool.address,
-                                         blckbook_collector=admin_address,
-                                         tokens_contract_address=fa2.address)
-    scenario += auction_house
-
-    the_vote = TheVote(administrator=admin_address,
-                       tokens_contract_address=fa2.address,
-                       auction_house_address=auction_house.address,
-                       voter_money_pool_address=voter_money_pool.address,
-                       spray_bank_address=admin_address)
-    scenario += the_vote
-
-    spray = FA2Spray(admin.address, the_vote.address, metadata_base, "https//example.com")
-    scenario += spray
-
-    bank = SprayBank(administrator=admin_address, spray_address=spray.address, the_vote_address=admin_address)
-    scenario += bank
-
-
-    spray_metadata = TestHelper.make_metadata(
-        name="$PRAY",
-        decimals=0,
-        symbol="$PRAY")
-
-    the_vote.set_spray_contract(spray.address).run(sender=admin)
-    the_vote.set_spray_bank_address(bank.address).run(sender=admin)
-    bank.set_the_vote_address(the_vote.address).run(sender=admin)
+    (fa2, auction_house, voter_money_pool, the_vote, spray, bank) = TestHelper.build_contracts(admin, scenario)
     
-    
+    scenario.h1("Simple withdraw tests")
+
     scenario.h2("We create bob and mint some spray tokens for the bank")
     bob = sp.test_account("Bob")
     spray.mint(to_=bank.address, amount=10, token=sp.variant("new", spray_metadata)).run(sender=admin)
@@ -2299,14 +2348,57 @@ def test():
     bank.set_withdraw_amount(0).run(sender=admin, valid=False)
     
     scenario.h2("We mint new spray and let tim withdraw")
-    bank.set_withdraw_amount(999).run(sender=admin)
     spray.mint(to_=bank.address, amount=1000, token=sp.variant("existing", 0)).run(sender=admin)
+    bank.set_withdraw_amount(999).run(sender=admin)
+
     bank.withdraw().run(sender=tim)
+
     scenario.h2("Susan can withdraw if we set the amount to 1")
     susan = sp.test_account("Susan")
     bank.withdraw().run(sender=susan, valid=False)
     bank.set_withdraw_amount(1).run(sender=admin)
     bank.withdraw().run(sender=susan)
+    
+    scenario.h2("Go to the next period and mint some more spray")
+    spray.mint(to_=bank.address, amount=1000, token=sp.variant("existing", 0)).run(sender=admin)
+    bank.set_new_period(sp.timestamp(0).add_days(7)).run(sender=admin)
+    
+    scenario.h2("Now withdraw a bunch")
+
+    bank.withdraw().run(sender=susan)
+    bank.withdraw().run(sender=susan, valid=False)
+    bank.withdraw().run(sender=bob)
+    bank.withdraw().run(sender=alice)
+    scenario.h3("Tim is too late to withdraw from the current period")
+    bank.withdraw().run(sender=tim, now=sp.timestamp(0).add_days(9), valid=False)
+
+    scenario.h1("Test voting with the coins given out and let the_vote trigger the next_period")
+
+    metadata = TestHelper.make_metadata(
+        name = "Bobs Spot",
+        decimals = 0,
+        symbol= "TK0")
+
+    scenario.h3("We admission one artwork for everyone")
+    the_vote.admission(metadata=metadata, uploader=bob.address).run(sender=admin, valid=True)
+    the_vote.admission(metadata=metadata, uploader=alice.address).run(sender=admin, valid=True)
+    the_vote.admission(metadata=metadata, uploader=tim.address).run(sender=admin, valid=True)
+    the_vote.admission(metadata=metadata, uploader=susan.address).run(sender=admin, valid=True)
+    
+    scenario.h3("Now we let everyone vote on their own artwork with a huge amount of tokens")
+    the_vote.vote(artwork_id = 0, amount = 5, index = 0, new_next = sp.variant("index", 1), new_previous = sp.variant("end", sp.unit)).run(sender=bob)
+    the_vote.vote(artwork_id = 1, amount = 6, index = 1, new_next = sp.variant("index", 0), new_previous = sp.variant("end", sp.unit)).run(sender=alice)
+    the_vote.vote(artwork_id = 2, amount = 999, index = 2, new_next = sp.variant("index", 1), new_previous = sp.variant("end", sp.unit)).run(sender=tim)
+    the_vote.vote(artwork_id = 3, amount = 2, index = 3, new_next = sp.variant("end", sp.unit), new_previous = sp.variant("index", 0)).run(sender=susan)
+
+    the_vote.mint_artworks(1).run(sender=bob, now = sp.timestamp(0).add_days(8))
+
+    bank.withdraw().run(sender=bob)
+    bank.withdraw().run(sender=alice)
+    bank.withdraw().run(sender=tim)
+
+    # now susan is late
+    bank.withdraw().run(sender=susan, now=sp.timestamp(0).add_days(17), valid=False)
 
 @sp.add_test(name = "Test voting-functionality")
 def test():
@@ -2316,26 +2408,8 @@ def test():
     scenario.table_of_contents()
 
     admin = sp.test_account("Administrator")
-    admin_address = admin.address
-
-    fa2 = TokensContract(admin_address)
-    scenario += fa2
-
-    voter_money_pool = VoterMoneyPoolContract(admin_address)
-    scenario += voter_money_pool
-
-    auction_house = AuctionHouseContract(administrator=admin_address,
-                                         voter_money_pool=voter_money_pool.address,
-                                         blckbook_collector=admin_address,
-                                         tokens_contract_address=fa2.address)
-    scenario += auction_house
-
-    the_vote = TheVote(administrator=admin_address,
-                       tokens_contract_address=fa2.address,
-                       auction_house_address=auction_house.address,
-                       voter_money_pool_address=voter_money_pool.address,
-                       spray_bank_address=admin_address)
-    scenario += the_vote
+    
+    (fa2, auction_house, voter_money_pool, the_vote, spray, bank) = TestHelper.build_contracts(admin, scenario)
 
     bob = sp.test_account("Bob")
     metadata = TestHelper.make_metadata(
@@ -2350,20 +2424,6 @@ def test():
     the_vote.admission(metadata=metadata, uploader=bob.address).run(sender=admin, valid=True)
     the_vote.admission(metadata=metadata, uploader=bob.address).run(sender=admin, valid=True)
     the_vote.admission(metadata=metadata, uploader=bob.address).run(sender=admin, valid=True)
-
-    spray = FA2Spray(admin.address, the_vote.address, metadata_base, "https//example.com")
-    scenario += spray
-
-    spray_metadata = TestHelper.make_metadata(
-        name="$PRAY",
-        decimals=0,
-        symbol="$PRAY")
-
-    the_vote.set_spray_contract(spray.address).run(sender=admin)
-
-    fa2.set_administrator(the_vote.address).run(sender=admin)
-    auction_house.set_administrator(the_vote.address).run(sender=admin)
-    voter_money_pool.set_administrator(the_vote.address).run(sender=admin)
 
     scenario.h3("we mint the first $PRAY for bob")
     spray.mint(to_=bob.address, amount=1000, token=sp.variant("new", spray_metadata)).run(sender=admin)
@@ -2428,24 +2488,7 @@ def test():
     admin = sp.test_account("Administrator")
     admin_address = admin.address;
 
-    fa2 = TokensContract(admin_address)
-    scenario += fa2
-
-    voter_money_pool = VoterMoneyPoolContract(admin_address)
-    scenario += voter_money_pool
-
-    auction_house = AuctionHouseContract(administrator=admin_address,
-                                         voter_money_pool=voter_money_pool.address,
-                                         blckbook_collector=admin_address,
-                                         tokens_contract_address=fa2.address)
-    scenario += auction_house
-
-    the_vote = TheVote(administrator=admin_address,
-                       tokens_contract_address=fa2.address,
-                       auction_house_address=auction_house.address,
-                       voter_money_pool_address=voter_money_pool.address,
-                       spray_bank_address=admin_address)
-    scenario += the_vote
+    (fa2, auction_house, voter_money_pool, the_vote, spray, bank) = TestHelper.build_contracts(admin, scenario)
 
     bob = sp.test_account("Bob")
     metadata = TestHelper.make_metadata(
@@ -2464,11 +2507,132 @@ def test():
     the_vote.admission(metadata=metadata, uploader=bob.address).run(sender=admin)
     the_vote.mint_artworks(0).run(sender=admin, now=sp.timestamp(0).add_days(16))
 
+"""
+@sp.add_test(name="The_Vote Detailed Testing")
+def test():
+    scenario = sp.test_scenario()
+    scenario.h1("The_Vote detailed Testing")
+    scenario.table_of_contents()
+
+    admin = sp.test_account("Administrator")
+    admin_address = admin.address;
+
+    (fa2, auction_house, voter_money_pool, the_vote, spray, bank) = TestHelper.build_contracts(admin, scenario)
+
+    bob = sp.test_account("Bob")
+    alice = sp.test_account("Alice")
+    tim = sp.test_account("Tim")
+    susan = sp.test_account("Susan")
+    metadata = TestHelper.make_metadata(
+        name = "Bobs Spot",
+        decimals = 0,
+        symbol= "TK0")
+
+    spray.mint(to_=bank.address, amount=1000, token=sp.variant("new", spray_metadata)).run(sender=admin)
+
+
+    the_vote.admission(metadata=metadata, uploader=bob.address).run(sender=admin)
+    the_vote.admission(metadata=metadata, uploader=alice.address).run(sender=admin)
+    the_vote.admission(metadata=metadata, uploader=tim.address).run(sender=admin)
+    the_vote.admission(metadata=metadata, uploader=susan.address).run(sender=admin)
+
+    bank.withdraw().run(sender=bob)
+    bank.withdraw().run(sender=alice)
+    bank.withdraw().run(sender=tim)
+    bank.withdraw().run(sender=susan)
+
+    scenario.h3("Artwork_Id is wrong but the rest is correct")
+    the_vote.vote(artwork_id = 0, amount = 1, index = 1, new_next = sp.variant("index", 1), new_previous = sp.variant("end", sp.unit)).run(sender=bob, valid=False)
+    the_vote.vote(artwork_id = 1, amount = 1, index = 2, new_next = sp.variant("index", 0), new_previous = sp.variant("end", sp.unit)).run(sender=bob, valid=False)
+
+    scenario.h3("Amount is higher than it can be")
+    the_vote.vote(artwork_id = 0, amount = 10, index = 0, new_next = sp.variant("index", 1), new_previous = sp.variant("end", sp.unit)).run(sender=bob, valid=False)
+
+    scenario.h3("Amount is 0")
+    the_vote.vote(artwork_id = 0, amount = 0, index = 0, new_next = sp.variant("index", 1), new_previous = sp.variant("end", sp.unit)).run(sender=bob, valid=False)
+
+    scenario.h3("Index is out_of_bound")
+    the_vote.vote(artwork_id = 0, amount = 1, index = 4, new_next = sp.variant("index", 1), new_previous = sp.variant("end", sp.unit)).run(sender=bob, valid=False)
+
+    scenario.h2("New_Next is wrong")
+    scenario.h3("New_Next is end")
+    the_vote.vote(artwork_id = 0, amount = 1, index = 0, new_next = sp.variant("end", sp.unit), new_previous = sp.variant("end", sp.unit)).run(sender=bob, valid=False)
+
+    scenario.h3("New_Next is index and too big")
+    the_vote.vote(artwork_id = 0, amount = 1, index = 0, new_next = sp.variant("index", 2), new_previous = sp.variant("end", sp.unit)).run(sender=bob, valid=False)
+
+    scenario.h3("New_Next is index and too little")
+    the_vote.vote(artwork_id = 0, amount = 1, index = 0, new_next = sp.variant("index", 1), new_previous = sp.variant("end", sp.unit)).run(sender=bob)
+    the_vote.vote(artwork_id = 1, amount = 1, index = 1, new_next = sp.variant("index", 2), new_previous = sp.variant("index", 0)).run(sender=bob)
+    the_vote.vote(artwork_id = 2, amount = 1, index = 2, new_next = sp.variant("index", 1), new_previous = sp.variant("index", 1)).run(sender=bob, valid=False)
+
+    scenario.h3("New_Next would not be a stable sort")
+    the_vote.vote(artwork_id = 3, amount = 1, index = 3, new_next = sp.variant("index", 1), new_previous = sp.variant("index", 0)).run(sender=bob, valid=False)
+
+
+    scenario.h2("New_Previous is wrong")
+    scenario.h3("New_previous is end")
+    the_vote.vote(artwork_id = 3, amount = 1, index = 3, new_next = sp.variant("index", 2), new_previous = sp.variant("end", sp.unit)).run(sender=bob, valid=False)
+
+    scenario.h3("New_previous is index and too big")
+    the_vote.vote(artwork_id = 2, amount = 1, index = 2, new_next = sp.variant("index", 3), new_previous = sp.variant("index", 3)).run(sender=bob, valid=False)
+
+    scenario.h3("New_previous is index and too little")
+    the_vote.vote(artwork_id = 2, amount = 1, index = 2, new_next = sp.variant("index", 3), new_previous = sp.variant("index", 0)).run(sender=bob, valid=False)
+
+    scenario.h3("New_previous would not be a stable sort")
+    the_vote.vote(artwork_id = 2, amount = 1, index = 2, new_next = sp.variant("index", 3), new_previous = sp.variant("index", 0)).run(sender=bob, valid=False)
+
+    scenario.h2("Become the highest voted artwork")
+    the_vote.vote(artwork_id = 3, amount = 2, index = 3, new_next = sp.variant("index", 0), new_previous = sp.variant("end", sp.unit)).run(sender=alice)
+    #the_vote.vote(artwork_id = 2, amount = 3, index = 2, new_next = sp.variant("index", 3), new_previous = sp.variant("end", sp.unit)).run(sender=alice)
+
+@sp.add_test(name="The_Vote Exhaustive Testing")
+def test():
+    scenario = sp.test_scenario()
+    scenario.h1("The_Vote Exhaustive Testing")
+    scenario.table_of_contents()
+
+    admin = sp.test_account("Administrator")
+    admin_address = admin.address;
+
+    (fa2, auction_house, voter_money_pool, the_vote, spray, bank) = TestHelper.build_contracts(admin, scenario)
+
+    bob = sp.test_account("Bob")
+    alice = sp.test_account("Alice")
+    tim = sp.test_account("Tim")
+    susan = sp.test_account("Susan")
+    metadata = TestHelper.make_metadata(
+        name = "Bobs Spot",
+        decimals = 0,
+        symbol= "TK0")
+
+    spray.mint(to_=bank.address, amount=1000, token=sp.variant("new", spray_metadata)).run(sender=admin)
+
+
+    the_vote.admission(metadata=metadata, uploader=bob.address).run(sender=admin)
+    the_vote.admission(metadata=metadata, uploader=alice.address).run(sender=admin)
+    the_vote.admission(metadata=metadata, uploader=tim.address).run(sender=admin)
+    the_vote.admission(metadata=metadata, uploader=susan.address).run(sender=admin)
+
+    bank.withdraw().run(sender=bob)
+    bank.withdraw().run(sender=alice)
+    bank.withdraw().run(sender=tim)
+    bank.withdraw().run(sender=susan)
+
+    scenario.h3("New_Next is index and too little")
+    TestHelper.test_vote(bob, the_vote, artwork_id=0, amount=1, index=0, new_next=sp.variant("index", 1), new_previous = sp.variant("end", sp.unit))
+    TestHelper.test_vote(bob, the_vote, artwork_id = 1, amount = 1, index = 1, new_next = sp.variant("index", 2), new_previous = sp.variant("index", 0))
+
+    scenario.h2("Become the highest voted artwork")
+    TestHelper.test_vote(alice, the_vote, artwork_id = 3, amount = 2, index = 3, new_next = sp.variant("index", 0), new_previous = sp.variant("end", sp.unit))
+    the_vote.vote().run(sender=alice)
+
     # cases for tests: (artwork_id = 7, amount = 12, index = 2, new_next = sp.variant("index", 0), new_previous = sp.variant("end", sp.unit))
     # TODO:
-    #   1. artwork_id wrong but rest is correct
-    #   2. amount is higher than it can be (not enough balance)
-    #   3. amount is 0
+    #   +1. artwork_id wrong but rest is correct
+    #   +2. amount is higher than it can be (not enough balance)
+    #   +3. amount is 0
     #   4. index is old
     #   5. index is out_of_bound
     #   6. index is of another artwork but the new_next and new_previous are correct (should be the same as test 1)
@@ -2481,7 +2645,16 @@ def test():
     #   8 new_previous is wrong (see all checks for the other)
     #   9 become the new highest voted (artwork)
     #   10 get voted for and remain the lowest_voted artwork (kind of sad)
+    #
+
+    # also test for one artwork alone (it is highest and lowest artwork-index at the same time this could mess things up)
+    # improve tests for the-voting-algorithm so that they test all possibilities and only accept the right one (meta-programming)
+
+    # TODO:
+    # maybe add a can withdraw offchain-view for the spray-bank so we can see whether one can withdraw.
+    # (with the amount of spray and how it currently works we could limit the amount of spray used)
+    # (maybe even let the_vote transmit spray back to the bank)
+    #   this could happen either when voting or at the end of the voting-cycle on the last mint
     # TODO:
     #  0. add more tests for voting. Edge-Cases and wrongly sorted votes that should fail (all possibilities)
-    #  1. write tests for the $PRAY-Bank
-    #  2. tests the interactions of all contracts with each other (from the vote to the payout of the auctions)
+    #  1. tests the interactions of all contracts with each other (from the vote to the payout of the auctions)
