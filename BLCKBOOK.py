@@ -896,6 +896,9 @@ class TheVote(sp.Contract):
         list_of_views = [
         ]
 
+        # this has to be added because of an error in SmartPy as of Version 0.10.1 Maybe this can be removed later on
+        self.add_flag("initial-cast")
+
         metadata = {
             "name": "BLCKBOOK The Vote",
             "description": "BLCKBOOK The Vote beta implementation. Using SmartPy.\n\n",
@@ -1110,6 +1113,15 @@ class TheVote(sp.Contract):
                 sp.verify(new_next.open_variant("index") == self.data.highest_vote_index, "THE_VOTE_WRONG_NEXT_HIGHEST_AMOUNT")
                 # now set the previous of the formerly highest rated artwork
                 self.data.votes[self.data.highest_vote_index].previous = sp.variant("index", index)
+                # we also need to set the previous and next of our old_previous and old_next to reference each other
+                # if our old_next is index we net to set it's previous
+                sp.if old_data.value.next.is_variant("index"):
+                    self.data.votes[old_data.value.next.open_variant("index")].previous = old_data.value.previous
+                sp.else:
+                    # we formerly were the lowest ranked artwork now our formerly_previous is it
+                    self.data.lowest_vote_index = old_data.value.previous.open_variant("index")
+                # we always need to set the next of our old_previous to our old_next
+                self.data.votes[old_data.value.previous.open_variant("index")].next = old_data.value.next
             # finally set the highest_vote_index to be us
             self.data.highest_vote_index = index
 
@@ -1343,7 +1355,19 @@ class TestHelper:
 
         return (fa2, auction_house, voter_money_pool, the_vote, spray, bank)
 
-    def test_vote(user, the_vote, artwork_id, amount, index, new_next, new_previous):
+    def test_vote(user, the_vote, scenario, artwork_id, amount, index, new_next, new_previous):
+        """
+        Tests (with expected false) for a single artwork. Then runs the last test with the given parameters
+        :param: user. The user to carry out the contract-calls
+        :param the_vote: the vote_contract
+        :param scenario: the scenario to print lines
+        :param artwork_id: the id. This is the only artwork_id that will be set in testing
+        :param amount: amount. This will not be modified in testing as other amounts could allow for a changed order
+        :param index: the index of the artwork in the big_map of the contract. will be modified in testing
+        :param new_next: the new_next from -1 (end) to n. will be modified in testing
+        :param new_previous: the new_previous from -1 (end) to n. will be modified in testing
+        :return: nothing
+        """
         for ind in range(0, index + 2):
             for n_n in range(-1, index + 2):
                 for n_p in range(-1, index + 2):
@@ -1367,6 +1391,7 @@ class TestHelper:
             new_previous = sp.variant("end", sp.unit)
         else:
             new_previous = sp.variant("index", sp.nat(new_previous))
+        scenario.h4("successful call")
         the_vote.vote(artwork_id=artwork_id, amount=amount, index=index, new_next=new_next,
                       new_previous=new_previous).run(sender=user, valid=True)
 
@@ -1375,8 +1400,6 @@ spray_metadata = TestHelper.make_metadata(
     decimals=0,
     symbol="$PRAY")
 
-
-"""
 @sp.add_test(name = "FA2-Contract Test")
 def test():
     scenario = sp.test_scenario()
@@ -2119,12 +2142,14 @@ def test():
         tokens_contract_address = sp.address('KT1HAtdXKvXqK2He3Xr2xmHQ9cYrxPTL7X9Z'))
     scenario += auction_house
 
+    # TODO actually deploy these contracts to the testnet
     the_vote = TheVote(administrator=admin_address,
         tokens_contract_address = sp.address('KT1HAtdXKvXqK2He3Xr2xmHQ9cYrxPTL7X9Z'),
         auction_house_address=sp.address('KT1XeA6tZYeBCm7aux3SAPswTuRE72R3VUCW'),
-        voter_money_pool_address=sp.address('KT1XeA6tZYeBCm7aux3SAPswTuRE72R3VUCW'))
+        voter_money_pool_address=sp.address('KT1XeA6tZYeBCm7aux3SAPswTuRE72R3VUCW'),
+        spray_bank_address=sp.address('KT1XeA6tZYeBCm7aux3SAPswTuRE72R3VUCW'),
+        deadline=sp.now.add_days(7))
     scenario += the_vote
-
 
 @sp.add_test(name = "Setting Admins of other contracts through theVote")
 def test():
@@ -2151,7 +2176,8 @@ def test():
     the_vote = TheVote(administrator=admin_address,
         tokens_contract_address = fa2.address,
         auction_house_address=auction_house.address,
-        voter_money_pool_address=voter_money_pool.address, spray_bank_address=admin_address)
+        voter_money_pool_address=voter_money_pool.address, spray_bank_address=admin_address,
+                       deadline=sp.now.add_days(7))
     scenario += the_vote
 
     scenario.h2("Admin Sets for FA2")
@@ -2209,7 +2235,8 @@ def test():
     the_vote = TheVote(administrator=admin_address,
         tokens_contract_address = fa2.address,
         auction_house_address=auction_house.address,
-        voter_money_pool_address=voter_money_pool.address, spray_bank_address=admin_address)
+        voter_money_pool_address=voter_money_pool.address, spray_bank_address=admin_address,
+                       deadline=sp.now.add_days(7))
     scenario += the_vote
 
     bob = sp.test_account("Bob")
@@ -2276,7 +2303,8 @@ def test():
         tokens_contract_address = fa2.address,
         auction_house_address=auction_house.address,
         voter_money_pool_address=voter_money_pool.address,
-                       spray_bank_address=admin_address)
+        spray_bank_address=admin_address,
+                       deadline=sp.now.add_days(7))
     scenario += the_vote
 
     bob = sp.test_account("Bob")
@@ -2594,7 +2622,8 @@ def test():
     scenario.h2("Become the highest voted artwork")
     the_vote.vote(artwork_id = 3, amount = 2, index = 3, new_next = sp.variant("index", 0), new_previous = sp.variant("end", sp.unit)).run(sender=alice)
     #the_vote.vote(artwork_id = 2, amount = 3, index = 2, new_next = sp.variant("index", 3), new_previous = sp.variant("end", sp.unit)).run(sender=alice)
-    """
+
+
 @sp.add_test(name="The_Vote Exhaustive Testing")
 def test():
     scenario = sp.test_scenario()
@@ -2602,7 +2631,6 @@ def test():
     scenario.table_of_contents()
 
     admin = sp.test_account("Administrator")
-    admin_address = admin.address;
 
     (fa2, auction_house, voter_money_pool, the_vote, spray, bank) = TestHelper.build_contracts(admin, scenario)
 
@@ -2628,14 +2656,55 @@ def test():
     bank.withdraw().run(sender=tim)
     bank.withdraw().run(sender=susan)
 
-    scenario.h3("New_Next is index and too little")
-    TestHelper.test_vote(bob, the_vote, artwork_id=0, amount=1, index=0, new_next=1, new_previous=-1)
-    TestHelper.test_vote(bob, the_vote, artwork_id = 1, amount = 1, index = 1, new_next = 2, new_previous = 0)
+    scenario.h3("Test with 0, 1, 0, 1, -1")
+    TestHelper.test_vote(bob, the_vote, scenario, artwork_id=0, amount=1, index=0, new_next = 1, new_previous = -1)
+    scenario.h3("Test with 1, 1, 1, 2, 0")
+    TestHelper.test_vote(bob, the_vote, scenario, artwork_id = 1, amount = 1, index = 1, new_next = 2, new_previous = 0)
 
-    scenario.h2("Become the highest voted artwork")
-    TestHelper.test_vote(alice, the_vote, artwork_id = 3, amount = 2, index = 3, new_next = 0, new_previous = -1)
+    scenario.h3("Test with 1, 1, 1, 2, 0")
+    TestHelper.test_vote(alice, the_vote, scenario, artwork_id = 3, amount = 2, index = 3, new_next = 0, new_previous = -1)
 
-    # cases for tests: (artwork_id = 7, amount = 12, index = 2, new_next = sp.variant("index", 0), new_previous = sp.variant("end", sp.unit))
+    scenario.h2("Mint top artwork, end the cycle")
+    the_vote.mint_artworks(1).run(sender=admin, now=sp.timestamp(0).add_days(8))
+
+    bank.withdraw().run(sender=bob)
+    bank.withdraw().run(sender=alice)
+    bank.withdraw().run(sender=tim)
+    bank.withdraw().run(sender=susan)
+    the_vote.admission(metadata=metadata, uploader=bob.address).run(sender=admin)
+    the_vote.admission(metadata=metadata, uploader=alice.address).run(sender=admin)
+    the_vote.admission(metadata=metadata, uploader=tim.address).run(sender=admin)
+
+    scenario.h3("Always become the highest_voted_artwork")
+    TestHelper.test_vote(tim, the_vote, scenario, artwork_id=4, amount=1, index=0, new_next=1, new_previous=-1)
+    TestHelper.test_vote(tim, the_vote, scenario, artwork_id=5, amount=4, index=1, new_next=0, new_previous=-1)
+    TestHelper.test_vote(alice, the_vote, scenario, artwork_id=6, amount=6, index=2, new_next=1, new_previous=-1)
+
+    scenario.h3("stay the lowest-ranked artwork")
+
+    TestHelper.test_vote(tim, the_vote, scenario, artwork_id=4, amount=1, index=0, new_next=-1, new_previous=1)
+
+    scenario.h2("Mint top artwork, end the cycle")
+    the_vote.mint_artworks(1).run(sender=admin, now=sp.timestamp(0).add_days(16))
+    bank.withdraw().run(sender=bob)
+    bank.withdraw().run(sender=alice)
+    bank.withdraw().run(sender=tim)
+    bank.withdraw().run(sender=susan)
+    the_vote.admission(metadata=metadata, uploader=bob.address).run(sender=admin)
+
+    scenario.h3("Add a bunch of votes to just a single artwork")
+    TestHelper.test_vote(tim, the_vote, scenario, artwork_id=7, amount=1, index=0, new_next=-1, new_previous=-1)
+    TestHelper.test_vote(tim, the_vote, scenario, artwork_id=7, amount=1, index=0, new_next=-1, new_previous=-1)
+    TestHelper.test_vote(alice, the_vote, scenario, artwork_id=7, amount=1, index=0, new_next=-1, new_previous=-1)
+    scenario.h3("Admission 2 new artworks")
+    the_vote.admission(metadata=metadata, uploader=alice.address).run(sender=admin)
+    the_vote.admission(metadata=metadata, uploader=tim.address).run(sender=admin)
+    scenario.h3("Vote both of them to the same amount above the other new artwork - this will test stability of the sorting")
+    TestHelper.test_vote(susan, the_vote, scenario, artwork_id=8, amount=4, index=1, new_next=0, new_previous=-1)
+    TestHelper.test_vote(susan, the_vote, scenario, artwork_id=9, amount=4, index=2, new_next=0, new_previous=1)
+    scenario.h3("Now vote the first artwork so it also has the same amount of votes")
+    TestHelper.test_vote(susan, the_vote, scenario, artwork_id=7, amount=1, index=0, new_next=-1, new_previous=2)
+
     # TODO:
     #   +1. artwork_id wrong but rest is correct
     #   +2. amount is higher than it can be (not enough balance)
@@ -2652,7 +2721,6 @@ def test():
     #   8 new_previous is wrong (see all checks for the other)
     #   9 become the new highest voted (artwork)
     #   10 get voted for and remain the lowest_voted artwork (kind of sad)
-    #
 
     # also test for one artwork alone (it is highest and lowest artwork-index at the same time this could mess things up)
     # improve tests for the-voting-algorithm so that they test all possibilities and only accept the right one (meta-programming)
