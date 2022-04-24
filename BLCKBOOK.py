@@ -454,9 +454,18 @@ class AuctionHouseContract(sp.Contract):
             percentage = sp.local("percentage", bid_amount.value // sp.nat(100))
             percentage_remainder = sp.local("percentage_remainder", bid_amount.value % sp.nat(100))
             uploader_reward = sp.local("uploader_reward", percentage.value * self.data.uploader_share)
-            voter_reward = sp.local("voter_reward", (percentage.value * self.data.voter_share) // auction.voter_amount)
-            remainder2 = sp.local("remainder2", (percentage.value * self.data.voter_share) % auction.voter_amount)
-            voter_transaction = sp.local("voter_transaction", voter_reward.value * auction.voter_amount)
+            # initialize these values with the total edge-case of voter_amount being 0 for a minted artwork
+            voter_reward = sp.local("voter_reward", sp.nat(0))
+            # set the remainder2 to the actual total amount for the edge case of 0 voters
+            remainder2 = sp.local("remainder2", percentage.value * self.data.voter_share)
+            voter_transaction = sp.local("voter_transaction", sp.nat(0))
+
+            sp.if auction.voter_amount > 0:
+                # and in the normal case overwrite the values. Can't be done in if-else because of scope
+                voter_reward.value = (percentage.value * self.data.voter_share) // auction.voter_amount
+                remainder2.value = (percentage.value * self.data.voter_share) % auction.voter_amount
+                voter_transaction.value = voter_reward.value * auction.voter_amount
+
             blckbook_reward = sp.local("blckbook_reward", self.data.blckbook_share * percentage.value + percentage_remainder.value + remainder2.value)
 
             voter_money_pool_contract = sp.contract(SetAuctionRewardParams.get_type(), self.data.voter_money_pool, entry_point = "set_auction_rewards").open_some()
@@ -2731,7 +2740,7 @@ def test():
 @sp.add_target(name="New Integration Tests", kind="integration")
 def test():
     scenario = sp.test_scenario()
-    scenario.h1("The_Vote Exhaustive Testing")
+    scenario.h1("New Integration Tests")
     scenario.table_of_contents()
 
     admin = sp.test_account("Administrator")
@@ -2829,6 +2838,50 @@ def test():
     voter_money_pool.withdraw().run(sender=dan)
     scenario.verify(voter_money_pool.balance == sp.mutez(0))
 
+@sp.add_target(name="Integration of a minted artwork with 0 votes", kind="integration")
+def test():
+    scenario = sp.test_scenario()
+    scenario.h1("Integration of a minted artwork with ß votes")
+    scenario.table_of_contents()
+
+    admin = sp.test_account("Administrator")
+
+    (fa2, auction_house, voter_money_pool, the_vote, spray, bank) = TestHelper.build_contracts(admin, scenario)
+
+    bob = sp.test_account("Bob")
+    alice = sp.test_account("Alice")
+    dan = sp.test_account("Dan")
+
+    # Let's display the accounts:
+    scenario.h2("Accounts")
+    scenario.show([admin, alice, bob, dan])
+    spray.mint(to_=bank.address, amount=1000, token=sp.variant("new", spray_metadata)).run(sender=admin)
+
+    scenario.h2("0 votes for an NFT that does get bid on")
+    # that means we have to first admission an artwork. Then let 3 people vote on it
+    bank.withdraw().run(sender=bob)
+    bank.withdraw().run(sender=alice)
+    bank.withdraw().run(sender=dan)
+
+    tok0_md = TestHelper.make_metadata(
+        name = "The Token Zero",
+        decimals = 0,
+        symbol= "TK0" )
+    scenario.h3("Mint the tokens")
+    the_vote.admission(metadata=tok0_md, uploader=alice.address).run(sender=admin)
+
+    the_vote.mint_artworks(1).run(sender=admin, now=sp.timestamp(0).add_days(7).add_minutes(5))
+
+    scenario.h3("dan bids")
+    scenario += auction_house.bid(0).run(sender=dan,amount=sp.mutez(3000000), now=sp.timestamp(0).add_minutes(6).add_days(8))
+
+    scenario.h3("end the auction before anyone has bid on it")
+    scenario += auction_house.end_auction(0).run(sender=admin, amount=sp.mutez(0), now=sp.timestamp(0).add_minutes(10).add_days(14))
+
+    scenario.h3("Make sure that neither the auction_house nor the voter_money_pool hold mutez")
+    scenario.verify(auction_house.balance == sp.mutez(0))
+    scenario.verify(voter_money_pool.balance == sp.mutez(0))
+
 
     # TODO:
     #   +1. artwork_id wrong but rest is correct
@@ -2858,3 +2911,5 @@ def test():
     # TODO:
     #  0. add more tests for voting. Edge-Cases and wrongly sorted votes that should fail (all possibilities)
     #  1. tests the interactions of all contracts with each other (from the vote to the payout of the auctions)
+    
+    """
