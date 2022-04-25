@@ -1286,6 +1286,8 @@ class TheVote(sp.Contract):
                     sp.mutez(0),
                     auction_house_contract,
                 )
+                # TODO: fix this potential gas-lock as the amount of voters could get too large to be handleable in this call
+                #   we would need to save the amount of voters we already passed on
                 # and transmit the votes to the voter_money_pool
                 sp.transfer(
                     sp.record(voter_addresses=self.data.vote_register[artwork_id].elements(), auction_and_token_id= current_index.value + token_index.value),
@@ -2942,7 +2944,7 @@ def test():
 @sp.add_target(name="Integration test for a huge amount of voters", kind="integration")
 def test():
     scenario = sp.test_scenario()
-    scenario.h1("Integration Test for a lot of artwork submissions")
+    scenario.h1("Integration Test for a huge amount of voters")
     scenario.table_of_contents()
     voter_amount = 500
 
@@ -2994,32 +2996,52 @@ def test():
 
     scenario.verify(voter_money_pool.balance == sp.mutez(0))
 
-
-    # TODO:
-    #   +1. artwork_id wrong but rest is correct
-    #   +2. amount is higher than it can be (not enough balance)
-    #   +3. amount is 0
-    #   4. index is old
-    #   5. index is out_of_bound
-    #   6. index is of another artwork but the new_next and new_previous are correct (should be the same as test 1)
-    #   7. new_next is wrong
-    #   7.1. new_next is end
-    #   7.2. new_next is index
-    #   7.2.1 index is too big
-    #   7.2.2 index is too small
-    #   7.2.3 index would not be a stable sort
-    #   8 new_previous is wrong (see all checks for the other)
-    #   9 become the new highest voted (artwork)
-    #   10 get voted for and remain the lowest_voted artwork (kind of sad)
-
-    # also test for one artwork alone (it is highest and lowest artwork-index at the same time this could mess things up)
-    # improve tests for the-voting-algorithm so that they test all possibilities and only accept the right one (meta-programming)
-
     # TODO:
     # maybe add a can withdraw offchain-view for the spray-bank so we can see whether one can withdraw.
     # (with the amount of spray and how it currently works we could limit the amount of spray used)
     # (maybe even let the_vote transmit spray back to the bank)
     #   this could happen either when voting or at the end of the voting-cycle on the last mint
-    # TODO:
-    #  0. add more tests for voting. Edge-Cases and wrongly sorted votes that should fail (all possibilities)
-    #  1. tests the interactions of all contracts with each other (from the vote to the payout of the auctions)
+
+    # ADD functionality to not transmit all voters on mint at once so we do not get gas-locked on that transaction.
+    # but I do not know which limit to be set there.
+
+@sp.add_target(name="Integration Test for minting artworks 1 by 1", kind="integration")
+def test():
+    scenario = sp.test_scenario()
+    scenario.h1("Integration Test for minting artworks 1 by 1")
+    scenario.table_of_contents()
+
+    admin = sp.test_account("Administrator")
+
+    (fa2, auction_house, voter_money_pool, the_vote, spray, bank) = TestHelper.build_contracts(admin, scenario)
+
+    bob = sp.test_account("Bob")
+    alice = sp.test_account("Alice")
+    dan = sp.test_account("Dan")
+
+    # Let's display the accounts:
+    scenario.h2("Accounts")
+    scenario.show([admin, alice, bob, dan])
+    spray.mint(to_=bank.address, amount=1000, token=sp.variant("new", spray_metadata)).run(sender=admin)
+
+    scenario.h2("3 Votes for an NFT that doesn't get bid on")
+    # that means we have to first admission an artwork. Then let 3 people vote on it
+    bank.withdraw().run(sender=bob)
+    bank.withdraw().run(sender=alice)
+    bank.withdraw().run(sender=dan)
+
+    tok0_md = TestHelper.make_metadata(
+        name = "The Token Zero",
+        decimals = 0,
+        symbol= "TK0" )
+    scenario.h3("Admit 500 artworks")
+    artwork_amount = 500
+    for i in range (0, artwork_amount):
+        the_vote.admission(metadata=tok0_md, uploader=alice.address).run(sender=admin)
+
+    scenario.h2("now mint the artworks in individual calls")
+    for j in range(0, int(artwork_amount / 10) + 1):
+        the_vote.mint_artworks(1).run(sender=admin, now=sp.timestamp(0).add_days(7).add_minutes(5))
+
+    scenario.h2("now test that the next mint would fail")
+    the_vote.mint_artworks(1).run(sender=admin, now=sp.timestamp(0).add_days(7).add_minutes(6), valid=False)
