@@ -2392,13 +2392,13 @@ def test():
 
     admin = sp.test_account("Admin")
     (fa2, auction_house, voter_money_pool, the_vote, spray, bank) = TestHelper.build_contracts(admin, scenario)
-    
+
     scenario.h1("Simple withdraw tests")
 
     scenario.h2("We create bob and mint some spray tokens for the bank")
     bob = sp.test_account("Bob")
     spray.mint(to_=bank.address, amount=10, token=sp.variant("new", spray_metadata)).run(sender=admin)
-    
+
     scenario.h2("Bob should be able to withdraw once")
     bank.withdraw().run(sender=bob)
     bank.withdraw().run(sender=bob, valid=False)
@@ -2411,10 +2411,10 @@ def test():
     scenario.h2("We now create tim who runs out of luck because the bank is empty")
     tim = sp.test_account("Tim")
     bank.withdraw().run(sender=tim, valid=False)
-    
+
     scenario.h2("check that the withdraw amount cannot be set to 0")
     bank.set_withdraw_amount(0).run(sender=admin, valid=False)
-    
+
     scenario.h2("We mint new spray and let tim withdraw")
     spray.mint(to_=bank.address, amount=1000, token=sp.variant("existing", 0)).run(sender=admin)
     bank.set_withdraw_amount(999).run(sender=admin)
@@ -2426,11 +2426,11 @@ def test():
     bank.withdraw().run(sender=susan, valid=False)
     bank.set_withdraw_amount(1).run(sender=admin)
     bank.withdraw().run(sender=susan)
-    
+
     scenario.h2("Go to the next period and mint some more spray")
     spray.mint(to_=bank.address, amount=1000, token=sp.variant("existing", 0)).run(sender=admin)
     bank.set_new_period(sp.timestamp(0).add_days(7)).run(sender=admin)
-    
+
     scenario.h2("Now withdraw a bunch")
 
     bank.withdraw().run(sender=susan)
@@ -2452,7 +2452,7 @@ def test():
     the_vote.admission(metadata=metadata, uploader=alice.address).run(sender=admin, valid=True)
     the_vote.admission(metadata=metadata, uploader=tim.address).run(sender=admin, valid=True)
     the_vote.admission(metadata=metadata, uploader=susan.address).run(sender=admin, valid=True)
-    
+
     scenario.h3("Now we let everyone vote on their own artwork with a huge amount of tokens")
     the_vote.vote(artwork_id = 0, amount = 5, index = 0, new_next = sp.variant("index", 1), new_previous = sp.variant("end", sp.unit)).run(sender=bob)
     the_vote.vote(artwork_id = 1, amount = 6, index = 1, new_next = sp.variant("index", 0), new_previous = sp.variant("end", sp.unit)).run(sender=alice)
@@ -2476,7 +2476,7 @@ def test():
     scenario.table_of_contents()
 
     admin = sp.test_account("Administrator")
-    
+
     (fa2, auction_house, voter_money_pool, the_vote, spray, bank) = TestHelper.build_contracts(admin, scenario)
 
     bob = sp.test_account("Bob")
@@ -2938,6 +2938,62 @@ def test():
                                               token_id = i)
                                 ])
         ]).run(sender = alice)
+
+@sp.add_target(name="Integration test for a huge amount of voters", kind="integration")
+def test():
+    scenario = sp.test_scenario()
+    scenario.h1("Integration Test for a lot of artwork submissions")
+    scenario.table_of_contents()
+    voter_amount = 500
+
+    admin = sp.test_account("Administrator")
+
+    (fa2, auction_house, voter_money_pool, the_vote, spray, bank) = TestHelper.build_contracts(admin, scenario)
+
+    bob = sp.test_account("Bob")
+    alice = sp.test_account("Alice")
+
+    spray.mint(to_=bank.address, amount=voter_amount*5, token=sp.variant("new", spray_metadata)).run(sender=admin)
+
+    tok0_md = TestHelper.make_metadata(
+        name="The Token Zero",
+        decimals=0,
+        symbol="TK0")
+    the_vote.admission(metadata=tok0_md, uploader=alice.address).run(sender=admin)
+
+    scenario.h2("Create a lot of users, withdraw and vote with them")
+    users = []
+    for i in range (0, voter_amount):
+        # we create a user, withdraw with them and vote with them.
+        user = sp.test_account(str(i))
+        bank.withdraw().run(sender=user)
+        the_vote.vote(artwork_id=0, amount=5, index=0, new_next=sp.variant("end", sp.unit),
+                      new_previous=sp.variant("end", sp.unit)).run(sender=user)
+        users.append(user)
+
+    scenario.h3("Alice can not withdraw because the bank is empty")
+    bank.withdraw().run(sender=alice, valid=False)
+
+    scenario.h2("now mint the artworks in a single call")
+    the_vote.mint_artworks(5).run(sender=admin, now=sp.timestamp(0).add_days(7).add_minutes(5))
+
+    bid_amount = 100000000
+    scenario += auction_house.bid(0).run(sender=bob,amount=sp.mutez(bid_amount), now=sp.timestamp(0).add_minutes(6).add_days(8))
+
+    scenario.verify(voter_money_pool.balance == sp.mutez(0))
+
+    scenario.h3("end the auction after it has been bid on")
+    scenario += auction_house.end_auction(0).run(sender=admin, amount=sp.mutez(0),
+                                                 now=sp.timestamp(0).add_minutes(10).add_days(14))
+
+    scenario.verify(voter_money_pool.balance == sp.mutez(int((bid_amount / 100) * 15)))
+
+    for j in range(0, voter_amount):
+        scenario.verify(voter_money_pool.balance == sp.mutez(int(bid_amount * 0.15 * (voter_amount - j) / voter_amount)))
+        voter_money_pool.withdraw().run(sender=users[j])
+
+    scenario.verify(voter_money_pool.balance == sp.mutez(0))
+
 
     # TODO:
     #   +1. artwork_id wrong but rest is correct
