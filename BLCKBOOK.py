@@ -2882,6 +2882,62 @@ def test():
     scenario.verify(auction_house.balance == sp.mutez(0))
     scenario.verify(voter_money_pool.balance == sp.mutez(0))
 
+@sp.add_target(name="Integration Test for a lot of artwork submissions", kind="integration")
+def test():
+    scenario = sp.test_scenario()
+    scenario.h1("Integration Test for a lot of artwork submissions")
+    scenario.table_of_contents()
+
+    admin = sp.test_account("Administrator")
+
+    (fa2, auction_house, voter_money_pool, the_vote, spray, bank) = TestHelper.build_contracts(admin, scenario)
+
+    bob = sp.test_account("Bob")
+    alice = sp.test_account("Alice")
+    dan = sp.test_account("Dan")
+
+    # Let's display the accounts:
+    scenario.h2("Accounts")
+    scenario.show([admin, alice, bob, dan])
+    spray.mint(to_=bank.address, amount=1000, token=sp.variant("new", spray_metadata)).run(sender=admin)
+
+    scenario.h2("3 Votes for an NFT that doesn't get bid on")
+    # that means we have to first admission an artwork. Then let 3 people vote on it
+    bank.withdraw().run(sender=bob)
+    bank.withdraw().run(sender=alice)
+    bank.withdraw().run(sender=dan)
+
+    tok0_md = TestHelper.make_metadata(
+        name = "The Token Zero",
+        decimals = 0,
+        symbol= "TK0" )
+    scenario.h3("Admit 100 artworks")
+    for i in range (0, 50):
+        # yes we can admission 100 artworks from the same uploader
+        the_vote.admission(metadata=tok0_md, uploader=alice.address).run(sender=admin)
+
+    scenario.h2("vote for 3 of them")
+    the_vote.vote(artwork_id = 49, amount = 1, index = 49, new_next = sp.variant("index", 0), new_previous = sp.variant("end", sp.unit)).run(sender=alice)
+    the_vote.vote(artwork_id = 20, amount = 1, index = 20, new_next = sp.variant("index", 0), new_previous = sp.variant("index", 49)).run(sender=bob)
+    the_vote.vote(artwork_id = 10, amount = 1, index = 10, new_next = sp.variant("index", 0), new_previous = sp.variant("index", 20)).run(sender=dan)
+
+    scenario.h2("now mint the artworks in a single call")
+    the_vote.mint_artworks(5).run(sender=admin, now=sp.timestamp(0).add_days(7).add_minutes(5))
+
+    scenario.h3("end the auctions before anyone has bid on it")
+    for i in range(0, 5):
+        scenario.h3("ending auction")
+        scenario += auction_house.end_auction(i).run(sender=admin, amount=sp.mutez(0), now=sp.timestamp(0).add_minutes(10).add_days(14))
+        scenario.h3("transmit token from alice to bob so we now she actually has it")
+        fa2.transfer(
+        [
+            BatchTransfer.item(from_ = alice.address,
+                                txs = [
+                                    sp.record(to_ = bob.address,
+                                              amount = 1,
+                                              token_id = i)
+                                ])
+        ]).run(sender = alice)
 
     # TODO:
     #   +1. artwork_id wrong but rest is correct
@@ -2911,5 +2967,3 @@ def test():
     # TODO:
     #  0. add more tests for voting. Edge-Cases and wrongly sorted votes that should fail (all possibilities)
     #  1. tests the interactions of all contracts with each other (from the vote to the payout of the auctions)
-    
-    """
