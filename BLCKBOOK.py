@@ -957,6 +957,8 @@ class TheVote(sp.Contract):
             artworks_to_mint=sp.TSet(sp.TNat),
             deadline=sp.TTimestamp,
             divisor=sp.TNat,
+            transmission_limit=sp.TNat,
+            limit_counter = sp.TNat,
         ))
         self.init(
             administrator=administrator,
@@ -983,7 +985,9 @@ class TheVote(sp.Contract):
             ready_for_minting=False,
             artworks_to_mint=sp.set({}, t= sp.TNat),
             deadline = deadline,
-            divisor=sp.nat(10)
+            divisor=sp.nat(10),
+            transmission_limit=sp.nat(200),
+            limit_counter = sp.nat(0),
             # after origination, we have a week to admit artworks
         )
 
@@ -1003,6 +1007,13 @@ class TheVote(sp.Contract):
         sp.verify(params > 1, "THE_VOTE_DIVISOR_MUST_BE_GREATER_THAN_1")
         # can not be 1 because of the math in setup_data_for_voting
         self.data.divisor = params
+
+    @sp.entry_point
+    def set_transmission_limit(self, params):
+        sp.verify(sp.sender == self.data.administrator, 'THE_VOTE_NOT_ADMIN')
+        sp.verify(params > 0, "THE_VOTE_TRANSMISSION_LIMIT_CANT_BE_0")
+        # can not be 1 because of the math in setup_data_for_voting
+        self.data.transmission_limit = params
 
     @sp.entry_point
     def set_administrator_of_token_contract(self, params):
@@ -1205,6 +1216,8 @@ class TheVote(sp.Contract):
         Mints artworks that have been voted for
         The first call will setup a data-structure of the artworks that should be minted this period
         The last call will clean-up the earlier used data-structures and set the new period in the spray_bank
+        If the artworks voted for contain more than self.data.transmission_limit we need to call this endpoint multiple times
+        as only the amount of votes is transferred in one call
         :param max_amount sets how many artworks should be minted with the current call can be 0 to just set the data ready for minting
         """
 
@@ -1242,6 +1255,9 @@ class TheVote(sp.Contract):
 
         # token_index is the index of the next FA2-Token we want to mint. We are calling the on-chain view for this
         token_index = sp.local("token_index", sp.view("count_tokens", self.data.tokens_contract_address, sp.unit, sp.TNat).open_some("THE_VOTE_INVALID_VIEW"))
+        sp.if self.data.limit_counter > 0:
+            # set the token index to itself -1 because we already minted the nft last call so we need the previous index
+            token_index.value = sp.as_nat(token_index.value - 1, "THE_VOTE_TOKEN_INDEX_NEGATIVE")
 
         # set the token-contract for minting the token (does not have to be in the loop)
         token_contract = sp.contract(
@@ -1267,39 +1283,64 @@ class TheVote(sp.Contract):
         sp.for artwork_id in self.data.artworks_to_mint.elements():
             # check whether we already minted the amount of artworks we wanted to mint
             sp.if current_index.value < max_amount:
-                # mint the NFT
-                # current_index + token_index is the index that the NFT will have (not the vote-index!)
-                sp.transfer(sp.record(amount= sp.nat(1),
-                                      token_id = current_index.value + token_index.value,
-                                      address=self.data.auction_house_address,
-                                      metadata= self.data.artwork_data[artwork_id].artwork_info),
-                    sp.mutez(0),
-                    token_contract,
-                )
-                # create the Auction for it
+                voter_amount = sp.local("voter_amount", sp.len(self.data.vote_register.get(artwork_id).elements()))
+
+                sp.if self.data.limit_counter == sp.nat(0):
+                    # mint the NFT only once if the counter is 0. Otherwise just transmit votes
+                    # current_index + token_index is the index that the NFT will have (not the vote-index!)
+                    sp.transfer(sp.record(amount= sp.nat(1),
+                                          token_id = current_index.value + token_index.value,
+                                          address=self.data.auction_house_address,
+                                          metadata= self.data.artwork_data[artwork_id].artwork_info),
+                        sp.mutez(0),
+                        token_contract,
+                    )
+                    # create the Auction for it
+                    sp.transfer(
+                        sp.record(auction_and_token_id = current_index.value + token_index.value,
+                                  end_timestamp = sp.now.add_days(7),
+                                  voter_amount = voter_amount.value,
+                                  uploader = self.data.artwork_data[artwork_id].uploader,
+                                  bid_amount=sp.mutez(1000000)),
+                        sp.mutez(0),
+                        auction_house_contract,
+                    )
+
+                transferred_votes = sp.local("transferred_votes", sp.list([], t=sp.TAddress))
+                # set the transferred votes to an empty list.
+                # if the voter amount is bigger than the transmission_limit we always set this here
+                sp.if voter_amount.value > self.data.transmission_limit:
+                    start_index = sp.local("start_index", self.data.limit_counter * self.data.transmission_limit)
+                    current_inner_index = sp.local("current_inner_index", 0)
+                    end_index = sp.local("end_index", start_index.value + self.data.transmission_limit)
+                    sp.if end_index.value >= voter_amount.value:
+                        # if the end_index is bigger than the voter_amount this is the last transaction so reset for the next artwork
+                        end_index.value = voter_amount.value
+                        self.data.limit_counter = sp.nat(0)
+                    sp.else:
+                        # if not increase the counter so the next call to mint transmissions the next voters
+                        self.data.limit_counter += 1
+                    sp.for voter_id in self.data.vote_register[artwork_id].elements():
+                        sp.if current_inner_index.value >= start_index.value:
+                            sp.if current_inner_index.value < end_index.value:
+                                transferred_votes.value.push(voter_id)
+                        current_inner_index.value += 1
+                sp.else:
+                    transferred_votes.value = self.data.vote_register[artwork_id].elements()
                 sp.transfer(
-                    sp.record(auction_and_token_id = current_index.value + token_index.value,
-                              end_timestamp = sp.now.add_days(7),
-                              voter_amount = sp.len(self.data.vote_register.get(artwork_id).elements()),
-                              uploader = self.data.artwork_data[artwork_id].uploader,
-                              bid_amount=sp.mutez(1000000)),
-                    sp.mutez(0),
-                    auction_house_contract,
-                )
-                # TODO: fix this potential gas-lock as the amount of voters could get too large to be handleable in this call
-                #   we would need to save the amount of voters we already passed on
-                # and transmit the votes to the voter_money_pool
-                sp.transfer(
-                    sp.record(voter_addresses=self.data.vote_register[artwork_id].elements(), auction_and_token_id= current_index.value + token_index.value),
+                    sp.record(voter_addresses=transferred_votes.value, auction_and_token_id= current_index.value + token_index.value),
                     sp.mutez(0),
                     voter_money_pool_contract,
                 )
 
-                # increase the current_index (so we can mint the next nft)
-                current_index.value += 1
-
-                # remove the artwork we just minted from the artworks_to_mint
-                self.data.artworks_to_mint.remove(artwork_id)
+                sp.if self.data.limit_counter == 0:
+                    # increase the current_index (so we can mint the next nft)
+                    current_index.value += 1
+                    # remove the artwork we just minted from the artworks_to_mint
+                    self.data.artworks_to_mint.remove(artwork_id)
+                sp.else:
+                    # set the current_index to max as we do not want to mint any more artworks if one reached the limit
+                    current_index.value = max_amount
 
         # this means we minted all or there was nothing to mint, so we can start the next voting_cycle and reset the data
         sp.if sp.len(self.data.artworks_to_mint.elements()) == 0:
@@ -2941,6 +2982,7 @@ def test():
                                 ])
         ]).run(sender = alice)
 
+# test does not work with html as this runs into errors
 @sp.add_target(name="Integration test for a huge amount of voters", kind="integration")
 def test():
     scenario = sp.test_scenario()
@@ -2976,8 +3018,10 @@ def test():
     scenario.h3("Alice can not withdraw because the bank is empty")
     bank.withdraw().run(sender=alice, valid=False)
 
-    scenario.h2("now mint the artworks in a single call")
-    the_vote.mint_artworks(5).run(sender=admin, now=sp.timestamp(0).add_days(7).add_minutes(5))
+    scenario.h2("now mint the artwork in 3 calls because of the limit")
+    the_vote.mint_artworks(1).run(sender=admin, now=sp.timestamp(0).add_days(7).add_minutes(5))
+    the_vote.mint_artworks(1).run(sender=admin, now=sp.timestamp(0).add_days(7).add_minutes(5))
+    the_vote.mint_artworks(1).run(sender=admin, now=sp.timestamp(0).add_days(7).add_minutes(5))
 
     bid_amount = 100000000
     scenario += auction_house.bid(0).run(sender=bob,amount=sp.mutez(bid_amount), now=sp.timestamp(0).add_minutes(6).add_days(8))
@@ -3045,3 +3089,74 @@ def test():
 
     scenario.h2("now test that the next mint would fail")
     the_vote.mint_artworks(1).run(sender=admin, now=sp.timestamp(0).add_days(7).add_minutes(6), valid=False)
+
+@sp.add_target(name="Integration tests for transmission_limit", kind="integration")
+def test():
+    scenario = sp.test_scenario()
+    scenario.h1("Integration Tests for transmission_limit")
+    scenario.table_of_contents()
+    voter_amount = 3
+
+    admin = sp.test_account("Administrator")
+
+    (fa2, auction_house, voter_money_pool, the_vote, spray, bank) = TestHelper.build_contracts(admin, scenario)
+
+    bob = sp.test_account("Bob")
+    alice = sp.test_account("Alice")
+
+    spray.mint(to_=bank.address, amount=voter_amount*5, token=sp.variant("new", spray_metadata)).run(sender=admin)
+
+    tok0_md = TestHelper.make_metadata(
+        name="The Token Zero",
+        decimals=0,
+        symbol="TK0")
+    the_vote.admission(metadata=tok0_md, uploader=alice.address).run(sender=admin)
+    the_vote.set_transmission_limit(1).run(sender=admin)
+
+    scenario.h2("Create a lot of users, withdraw and vote with them")
+    users = []
+    for i in range (0, voter_amount):
+        # we create a user, withdraw with them and vote with them.
+        user = sp.test_account(str(i))
+        bank.withdraw().run(sender=user)
+        the_vote.vote(artwork_id=0, amount=5, index=0, new_next=sp.variant("end", sp.unit),
+                      new_previous=sp.variant("end", sp.unit)).run(sender=user)
+        users.append(user)
+
+    scenario.h3("Alice can not withdraw because the bank is empty")
+    bank.withdraw().run(sender=alice, valid=False)
+
+    scenario.h2("now mint the artworks/transmit the voters")
+    for k in range(0, 3):
+        the_vote.mint_artworks(1).run(sender=admin, now=sp.timestamp(0).add_days(7).add_minutes(5))
+
+    scenario.h3("the vote minting should be completed")
+    the_vote.mint_artworks(0).run(sender=admin, valid=False, now=sp.timestamp(0).add_days(7).add_minutes(6))
+
+    bid_amount = 100000000
+    scenario += auction_house.bid(0).run(sender=bob,amount=sp.mutez(bid_amount), now=sp.timestamp(0).add_minutes(6).add_days(8))
+
+    scenario.verify(voter_money_pool.balance == sp.mutez(0))
+
+    scenario.h3("end the auction after it has been bid on")
+    scenario += auction_house.end_auction(0).run(sender=admin, amount=sp.mutez(0),
+                                                 now=sp.timestamp(0).add_minutes(10).add_days(14))
+
+    scenario.verify(voter_money_pool.balance == sp.mutez(int((bid_amount / 100) * 15)))
+
+    for j in range(0, voter_amount):
+        scenario.verify(voter_money_pool.balance == sp.mutez(int(bid_amount * 0.15 * (voter_amount - j) / voter_amount)))
+        voter_money_pool.withdraw().run(sender=users[j])
+
+    scenario.verify(voter_money_pool.balance == sp.mutez(0))
+
+
+    # TODO:
+    #   add tests for gas-lock code
+    #   will not mint the next nft is gas-limit is reached
+    #   will transmit all voters if gas-limit is reached (via multiple calls)
+    #   will not double-mint nfts or double-create auctions if gas-limit is reached
+    #   will not end minting if gas-limit is reached on the last call
+    #   will work if the amount is exactly the gas-limit
+    #   can set gas limit
+    #   test gas-limit x1000
