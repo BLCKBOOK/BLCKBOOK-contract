@@ -1017,7 +1017,7 @@ class TheVote(sp.Contract):
         self.data.transmission_limit = params
 
     @sp.entry_point
-    def set_administrator_of_token_contract(self, params):
+    def set_admin_of_token_contract(self, params):
         sp.verify(sp.sender == self.data.administrator, 'THE_VOTE_NOT_ADMIN')
         sp.set_type_expr(params, sp.TAddress)
 
@@ -1030,7 +1030,7 @@ class TheVote(sp.Contract):
         )
 
     @sp.entry_point
-    def set_administrator_of_voter_money_pool_contract(self, params):
+    def set_admin_of_pool_contract(self, params):
         sp.verify(sp.sender == self.data.administrator, 'THE_VOTE_NOT_ADMIN')
         sp.set_type_expr(params, sp.TAddress)
 
@@ -1043,7 +1043,7 @@ class TheVote(sp.Contract):
         )
 
     @sp.entry_point
-    def set_administrator_of_auction_house_contract(self, params):
+    def set_admin_of_auction_contract(self, params):
         sp.verify(sp.sender == self.data.administrator, 'THE_VOTE_NOT_ADMIN')
         sp.set_type_expr(params, sp.TAddress)
 
@@ -1468,6 +1468,40 @@ spray_metadata = TestHelper.make_metadata(
     name="$PRAY",
     decimals=0,
     symbol="$PRAY")
+
+@sp.add_target(name="For Origination", kind="origination")
+def test():
+
+    admin_address = sp.address("tz1PEbaFp9jE6syH5xg29YRegbwLLehzK3w2")
+    scenario = sp.test_scenario()
+    scenario.h1("For origination")
+    scenario.table_of_contents()
+
+    fa2 = TokensContract(admin_address)
+    scenario += fa2
+
+    voter_money_pool = VoterMoneyPoolContract(admin_address)
+    scenario += voter_money_pool
+
+    auction_house = AuctionHouseContract(administrator=admin_address,
+        voter_money_pool = sp.address('KT1XeA6tZYeBCm7aux3SAPswTuRE72R3VUCW'),
+        blckbook_collector = admin_address,
+        tokens_contract_address = sp.address('KT1HAtdXKvXqK2He3Xr2xmHQ9cYrxPTL7X9Z'))
+    scenario += auction_house
+
+    the_vote = TheVote(administrator=admin_address,
+        tokens_contract_address = sp.address('KT1HAtdXKvXqK2He3Xr2xmHQ9cYrxPTL7X9Z'),
+        auction_house_address=sp.address('KT1XeA6tZYeBCm7aux3SAPswTuRE72R3VUCW'),
+        voter_money_pool_address=sp.address('KT1XeA6tZYeBCm7aux3SAPswTuRE72R3VUCW'),
+        spray_bank_address=sp.address('KT1XeA6tZYeBCm7aux3SAPswTuRE72R3VUCW'),
+        deadline=sp.now.add_days(7))
+    scenario += the_vote
+
+    spray = FA2Spray(admin_address, the_vote.address, metadata_base, "https//example.com")
+    scenario += spray
+
+    bank = SprayBank(administrator=admin_address, spray_address=spray.address, the_vote_address=admin_address)
+    scenario += bank
 
 @sp.add_target(name = "FA2-Contract Test", kind="testing")
 def test():
@@ -2190,38 +2224,6 @@ def test():
     voter_money_pool.withdraw().run(sender=dan)
     scenario.verify(voter_money_pool.balance == sp.mutez(0))
 
-@sp.add_target(name="For Origination", kind="origination")
-def test():
-
-    admin_address = sp.address("tz1PEbaFp9jE6syH5xg29YRegbwLLehzK3w2")
-    scenario = sp.test_scenario()
-    scenario.h1("For origination")
-    scenario.table_of_contents()
-
-    fa2 = TokensContract(admin_address)
-    scenario += fa2
-
-    voter_money_pool = VoterMoneyPoolContract(admin_address)
-    scenario += voter_money_pool
-
-    auction_house = AuctionHouseContract(administrator=admin_address,
-        voter_money_pool = sp.address('KT1XeA6tZYeBCm7aux3SAPswTuRE72R3VUCW'),
-        blckbook_collector = admin_address,
-        tokens_contract_address = sp.address('KT1HAtdXKvXqK2He3Xr2xmHQ9cYrxPTL7X9Z'))
-    scenario += auction_house
-
-    # TODO fix this deployment thing
-    # voter_money_pool.set_auction_house_address(auction_house.address).run(sender=admin)
-
-    # TODO actually deploy these contracts to the testnet
-    the_vote = TheVote(administrator=admin_address,
-        tokens_contract_address = sp.address('KT1HAtdXKvXqK2He3Xr2xmHQ9cYrxPTL7X9Z'),
-        auction_house_address=sp.address('KT1XeA6tZYeBCm7aux3SAPswTuRE72R3VUCW'),
-        voter_money_pool_address=sp.address('KT1XeA6tZYeBCm7aux3SAPswTuRE72R3VUCW'),
-        spray_bank_address=sp.address('KT1XeA6tZYeBCm7aux3SAPswTuRE72R3VUCW'),
-        deadline=sp.now.add_days(7))
-    scenario += the_vote
-
 @sp.add_target(name="Setting Admins of other contracts through theVote", kind="testing")
 def test():
 
@@ -2256,20 +2258,20 @@ def test():
     scenario.h3("Set theVote as admin of FA2")
     fa2.set_administrator(the_vote.address).run(sender=admin)
     scenario.h3("the Votes sets admin as admin of FA2 again through the nested call")
-    the_vote.set_administrator_of_token_contract(admin.address).run(sender=admin)
+    the_vote.set_admin_of_token_contract(admin.address).run(sender=admin)
     scenario.h3("Set theVote as admin of FA2 again")
     fa2.set_administrator(the_vote.address).run(sender=admin)
 
     scenario.h3("Bob can not set the admin of FA2 through theVote cause he is not its admin")
     bob = sp.test_account("Bob")
-    the_vote.set_administrator_of_token_contract(admin.address).run(sender=bob, valid=False)
+    the_vote.set_admin_of_token_contract(admin.address).run(sender=bob, valid=False)
 
     scenario.h2("Admin Sets for Auction_House")
 
     scenario.h3("Set theVote as admin of Auction_house")
     auction_house.set_administrator(the_vote.address).run(sender=admin)
     scenario.h3("the Votes sets admin as admin of Auction_house again through the nested call")
-    the_vote.set_administrator_of_auction_house_contract(admin.address).run(sender=admin)
+    the_vote.set_admin_of_auction_contract(admin.address).run(sender=admin)
     scenario.h3("Set theVote as admin of Auction_House again")
     auction_house.set_administrator(the_vote.address).run(sender=admin)
 
@@ -2277,7 +2279,7 @@ def test():
     scenario.h3("Set theVote as admin of Voter_Money_Pool")
     voter_money_pool.set_administrator(the_vote.address).run(sender=admin)
     scenario.h3("the Votes sets admin as admin ofvoter_money_pool again through the nested call")
-    the_vote.set_administrator_of_voter_money_pool_contract(admin.address).run(sender=admin)
+    the_vote.set_admin_of_pool_contract(admin.address).run(sender=admin)
     scenario.h3("Set theVote as admin of voter_money_pool again")
     voter_money_pool.set_administrator(the_vote.address).run(sender=admin)
 
