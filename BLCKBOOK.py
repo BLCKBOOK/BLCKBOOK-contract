@@ -3150,13 +3150,180 @@ def test():
 
     scenario.verify(voter_money_pool.balance == sp.mutez(0))
 
+@sp.add_target(name="Integration test transmission_limit count_tokens", kind="integration")
+def test():
+    scenario = sp.test_scenario()
+    scenario.h1("Integration test transmission_limit count_tokens")
+    scenario.table_of_contents()
+    voter_amount = 3
+
+    admin = sp.test_account("Administrator")
+
+    (fa2, auction_house, voter_money_pool, the_vote, spray, bank) = TestHelper.build_contracts(admin, scenario)
+
+    bob = sp.test_account("Bob")
+    alice = sp.test_account("Alice")
+
+    spray.mint(to_=bank.address, amount=voter_amount * 5, token=sp.variant("new", spray_metadata)).run(sender=admin)
+    bank.withdraw().run(sender=alice)
+    bank.withdraw().run(sender=bob)
+
+    tok0_md = TestHelper.make_metadata(
+        name="The Token Zero",
+        decimals=0,
+        symbol="TK0")
+    tok11_md = TestHelper.make_metadata(
+        name="11",
+            decimals=0,
+        symbol="TK11")
+    scenario.h2("admission 10 artworks")
+    for k in range(0, 10):
+        the_vote.admission(metadata=tok0_md, uploader=alice.address).run(sender=admin)
+    the_vote.admission(metadata=tok11_md, uploader=alice.address).run(sender=admin)
+
+    the_vote.set_transmission_limit(1).run(sender=admin)
+
+    scenario.h2("Create a lot of users, withdraw and vote with them")
+    the_vote.vote(artwork_id=0, amount=1, index=0, new_next=sp.variant("index", 1),
+                  new_previous=sp.variant("end", sp.unit)).run(sender=alice)
+    the_vote.vote(artwork_id=0, amount=1, index=0, new_next=sp.variant("index", 1),
+                  new_previous=sp.variant("end", sp.unit)).run(sender=bob)
+    the_vote.vote(artwork_id=10, amount=1, index=10, new_next=sp.variant("index", 1),
+                  new_previous=sp.variant("index", 0)).run(sender=bob)
+
+    scenario.h3("Alice can not withdraw because the bank is empty")
+    bank.withdraw().run(sender=alice, valid=False)
+
+    scenario.h2("now mint the artworks/transmit the voters")
+    the_vote.mint_artworks(1).run(sender=admin, now=sp.timestamp(0).add_days(7).add_minutes(5))
+    the_vote.mint_artworks(1).run(sender=admin, now=sp.timestamp(0).add_days(7).add_minutes(5))
+    scenario.verify(fa2.count_tokens() == 1)
+
+    the_vote.mint_artworks(1).run(sender=admin, now=sp.timestamp(0).add_days(7).add_minutes(5))
+    scenario.show(fa2.count_tokens())
+    scenario.verify(fa2.count_tokens() == 2)
+
+@sp.add_target(name="Integration test transmission_limit exactly gas_limit", kind="integration")
+def test():
+    scenario = sp.test_scenario()
+    scenario.h1("Integration test transmission_limit exactly gas_limit")
+    scenario.table_of_contents()
+    voter_amount = 3
+
+    admin = sp.test_account("Administrator")
+
+    (fa2, auction_house, voter_money_pool, the_vote, spray, bank) = TestHelper.build_contracts(admin, scenario)
+
+    alice = sp.test_account("Alice")
+
+    spray.mint(to_=bank.address, amount=1000, token=sp.variant("new", spray_metadata)).run(sender=admin)
+
+    tok11_md = TestHelper.make_metadata(
+        name="11",
+            decimals=0,
+        symbol="TK11")
+    scenario.h2("admission 1 artwork")
+    the_vote.admission(metadata=tok11_md, uploader=alice.address).run(sender=admin)
+
+    the_vote.set_transmission_limit(3).run(sender=admin)
+
+    scenario.h2("test with voters-amount equal to the limit")
+    users = []
+    for i in range (0, voter_amount):
+        # we create a user, withdraw with them and vote with them.
+        user = sp.test_account(str(i))
+        bank.withdraw().run(sender=user)
+        the_vote.vote(artwork_id=0, amount=5, index=0, new_next=sp.variant("end", sp.unit),
+                      new_previous=sp.variant("end", sp.unit)).run(sender=user)
+        users.append(user)
+
+    the_vote.mint_artworks(1).run(sender=admin, now=sp.timestamp(0).add_days(7).add_minutes(5))
+    the_vote.mint_artworks(1).run(sender=admin, now=sp.timestamp(0).add_days(7).add_minutes(6), valid=False)
+
+    scenario.h2("test with voters-amount 1 bigger than the limit")
+    the_vote.set_transmission_limit(2).run(sender=admin)
+    the_vote.admission(metadata=tok11_md, uploader=alice.address).run(sender=admin, now=sp.timestamp(0).add_days(8))
+    for j in range (0, voter_amount):
+        # we create a user, withdraw with them and vote with them.
+        bank.withdraw().run(sender=users[j], now=sp.timestamp(0).add_days(9))
+        the_vote.vote(artwork_id=1, amount=5, index=0, new_next=sp.variant("end", sp.unit),
+                      new_previous=sp.variant("end", sp.unit)).run(sender=users[j])
+
+    the_vote.mint_artworks(1).run(sender=admin, now=sp.timestamp(0).add_days(16).add_minutes(5))
+    the_vote.mint_artworks(1).run(sender=admin, now=sp.timestamp(0).add_days(16).add_minutes(6))
+    the_vote.mint_artworks(1).run(sender=admin, now=sp.timestamp(0).add_days(16).add_minutes(6), valid=False)
+
+    scenario.h2("test with voters-amount smaller 1 than the limit")
+    the_vote.set_transmission_limit(4).run(sender=admin)
+    the_vote.admission(metadata=tok11_md, uploader=alice.address).run(sender=admin, now=sp.timestamp(0).add_days(8))
+    for k in range (0, voter_amount):
+        # we create a user, withdraw with them and vote with them.
+        bank.withdraw().run(sender=users[k], now=sp.timestamp(0).add_days(18))
+        the_vote.vote(artwork_id=2, amount=5, index=0, new_next=sp.variant("end", sp.unit),
+                      new_previous=sp.variant("end", sp.unit)).run(sender=users[k])
+
+    the_vote.mint_artworks(1).run(sender=admin, now=sp.timestamp(0).add_days(27).add_minutes(5))
+    the_vote.mint_artworks(1).run(sender=admin, now=sp.timestamp(0).add_days(27).add_minutes(6), valid=False)
+
+@sp.add_target(name="Integration test for voter amount way bigger than limit", kind="current")
+def test():
+    scenario = sp.test_scenario()
+    scenario.h1("Integration test for voter amount way bigger than limit")
+    scenario.table_of_contents()
+    voter_amount = 300
+    transmission_limit = 3
+    factor = int(voter_amount/transmission_limit)
+
+
+    admin = sp.test_account("Administrator")
+
+    (fa2, auction_house, voter_money_pool, the_vote, spray, bank) = TestHelper.build_contracts(admin, scenario)
+
+    alice = sp.test_account("Alice")
+    bob = sp.test_account("Bob")
+
+    spray.mint(to_=bank.address, amount=200000, token=sp.variant("new", spray_metadata)).run(sender=admin)
+
+    tok0_md = TestHelper.make_metadata(
+        name="The Token Zero",
+        decimals=0,
+        symbol="TK0")
+    the_vote.admission(metadata=tok0_md, uploader=alice.address).run(sender=admin)
+
+    scenario.h2("Create a lot of users, withdraw and vote with them")
+    users = []
+    for i in range (0, voter_amount):
+        # we create a user, withdraw with them and vote with them.
+        user = sp.test_account(str(i))
+        bank.withdraw().run(sender=user)
+        the_vote.vote(artwork_id=0, amount=1, index=0, new_next=sp.variant("end", sp.unit),
+                      new_previous=sp.variant("end", sp.unit)).run(sender=user)
+        users.append(user)
+
+    the_vote.set_transmission_limit(transmission_limit).run(sender=admin)
+    for k in range (0, factor):
+        # we create a user, withdraw with them and vote with them.
+        the_vote.mint_artworks(1).run(sender=admin, now=sp.timestamp(0).add_days(7).add_minutes(5))
+
+    the_vote.mint_artworks(1).run(sender=admin, now=sp.timestamp(0).add_days(7).add_minutes(5), valid=False)
+
+    bid_amount = voter_amount * 15 * 1000000
+    scenario += auction_house.bid(0).run(sender=bob,amount=sp.mutez(bid_amount), now=sp.timestamp(0).add_minutes(6).add_days(8))
+
+    scenario.verify(voter_money_pool.balance == sp.mutez(0))
+
+    scenario.h3("end the auction after it has been bid on")
+    scenario += auction_house.end_auction(0).run(sender=admin, amount=sp.mutez(0),
+                                                 now=sp.timestamp(0).add_minutes(10).add_days(14))
+
+    scenario.verify(voter_money_pool.balance == sp.mutez(int((bid_amount / 100) * 15)))
+
+    for j in range(0, voter_amount):
+        scenario.verify(voter_money_pool.balance == sp.mutez(int(bid_amount * 0.15 * (voter_amount - j) / voter_amount)))
+        voter_money_pool.withdraw().run(sender=users[j])
+
+    scenario.verify(voter_money_pool.balance == sp.mutez(0))
+
 
     # TODO:
-    #   add tests for gas-lock code
-    #   will not mint the next nft is gas-limit is reached
-    #   will transmit all voters if gas-limit is reached (via multiple calls)
-    #   will not double-mint nfts or double-create auctions if gas-limit is reached
-    #   will not end minting if gas-limit is reached on the last call
-    #   will work if the amount is exactly the gas-limit
-    #   can set gas limit
-    #   test gas-limit x1000
+    #   make it impossible to change the transmission_limit during minting and add a test for it
