@@ -2989,7 +2989,7 @@ def test():
     scenario = sp.test_scenario()
     scenario.h1("Integration Test for a huge amount of voters")
     scenario.table_of_contents()
-    voter_amount = 500
+    voter_amount = 402
 
     admin = sp.test_account("Administrator")
 
@@ -3024,7 +3024,7 @@ def test():
     the_vote.mint_artworks(1).run(sender=admin, now=sp.timestamp(0).add_days(7).add_minutes(5))
     the_vote.mint_artworks(1).run(sender=admin, now=sp.timestamp(0).add_days(7).add_minutes(5))
 
-    bid_amount = 100000000
+    bid_amount = voter_amount * 15 * 100000000
     scenario += auction_house.bid(0).run(sender=bob,amount=sp.mutez(bid_amount), now=sp.timestamp(0).add_minutes(6).add_days(8))
 
     scenario.verify(voter_money_pool.balance == sp.mutez(0))
@@ -3040,15 +3040,6 @@ def test():
         voter_money_pool.withdraw().run(sender=users[j])
 
     scenario.verify(voter_money_pool.balance == sp.mutez(0))
-
-    # TODO:
-    # maybe add a can withdraw offchain-view for the spray-bank so we can see whether one can withdraw.
-    # (with the amount of spray and how it currently works we could limit the amount of spray used)
-    # (maybe even let the_vote transmit spray back to the bank)
-    #   this could happen either when voting or at the end of the voting-cycle on the last mint
-
-    # ADD functionality to not transmit all voters on mint at once so we do not get gas-locked on that transaction.
-    # but I do not know which limit to be set there.
 
 @sp.add_target(name="Integration Test for minting artworks 1 by 1", kind="integration")
 def test():
@@ -3079,8 +3070,8 @@ def test():
         name = "The Token Zero",
         decimals = 0,
         symbol= "TK0" )
-    scenario.h3("Admit 500 artworks")
-    artwork_amount = 500
+    scenario.h3("Admit 200 artworks")
+    artwork_amount = 200
     for i in range (0, artwork_amount):
         the_vote.admission(metadata=tok0_md, uploader=alice.address).run(sender=admin)
 
@@ -3191,9 +3182,6 @@ def test():
                   new_previous=sp.variant("end", sp.unit)).run(sender=bob)
     the_vote.vote(artwork_id=10, amount=1, index=10, new_next=sp.variant("index", 1),
                   new_previous=sp.variant("index", 0)).run(sender=bob)
-
-    scenario.h3("Alice can not withdraw because the bank is empty")
-    bank.withdraw().run(sender=alice, valid=False)
 
     scenario.h2("now mint the artworks/transmit the voters")
     the_vote.mint_artworks(1).run(sender=admin, now=sp.timestamp(0).add_days(7).add_minutes(5))
@@ -3367,5 +3355,8 @@ def test():
     scenario.h2("can not set transmission limit during minting")
     the_vote.set_transmission_limit(100).run(sender=admin, valid=False)
 
-    # TODO:
-    #   make it impossible to change the transmission_limit during minting and add a test for it
+# TODO:
+#   maybe add a can withdraw offchain-view for the spray-bank so we can see whether one can withdraw.
+#   (with the amount of spray and how it currently works we could limit the amount of spray used)
+#   (maybe even let the_vote transmit spray back to the bank)
+#   this could happen either when voting or at the end of the voting-cycle on the last mint
