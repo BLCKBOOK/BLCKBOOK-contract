@@ -1011,6 +1011,7 @@ class TheVote(sp.Contract):
     @sp.entry_point
     def set_transmission_limit(self, params):
         sp.verify(sp.sender == self.data.administrator, 'THE_VOTE_NOT_ADMIN')
+        sp.verify(~self.data.ready_for_minting, "THE_VOTE_CAN_NOT_SET_TRANSMISSION_LIMIT_DURING_MINTING")
         sp.verify(params > 0, "THE_VOTE_TRANSMISSION_LIMIT_CANT_BE_0")
         # can not be 1 because of the math in setup_data_for_voting
         self.data.transmission_limit = params
@@ -2694,7 +2695,7 @@ def test():
     scenario.h2("Become the highest voted artwork")
     the_vote.vote(artwork_id = 3, amount = 2, index = 3, new_next = sp.variant("index", 0), new_previous = sp.variant("end", sp.unit)).run(sender=alice)
 
-@sp.add_target(name="The_Vote Exhaustive Testing", kind="exhaustive_testing")
+@sp.add_target(name="The_Vote Exhaustive Testing", kind="testing")
 def test():
     scenario = sp.test_scenario()
     scenario.h1("The_Vote Exhaustive Testing")
@@ -3265,7 +3266,7 @@ def test():
     the_vote.mint_artworks(1).run(sender=admin, now=sp.timestamp(0).add_days(27).add_minutes(5))
     the_vote.mint_artworks(1).run(sender=admin, now=sp.timestamp(0).add_days(27).add_minutes(6), valid=False)
 
-@sp.add_target(name="Integration test for voter amount way bigger than limit", kind="current")
+@sp.add_target(name="Integration test for voter amount way bigger than limit", kind="integration")
 def test():
     scenario = sp.test_scenario()
     scenario.h1("Integration test for voter amount way bigger than limit")
@@ -3324,6 +3325,47 @@ def test():
 
     scenario.verify(voter_money_pool.balance == sp.mutez(0))
 
+@sp.add_target(name="can not set transmission limit during minting", kind="integration")
+def test():
+    scenario = sp.test_scenario()
+    scenario.h1("can not set transmission limit during minting")
+    scenario.table_of_contents()
+    voter_amount = 3
+
+    admin = sp.test_account("Administrator")
+
+    (fa2, auction_house, voter_money_pool, the_vote, spray, bank) = TestHelper.build_contracts(admin, scenario)
+
+    bob = sp.test_account("Bob")
+    alice = sp.test_account("Alice")
+
+    spray.mint(to_=bank.address, amount=voter_amount * 5, token=sp.variant("new", spray_metadata)).run(sender=admin)
+    bank.withdraw().run(sender=alice)
+    bank.withdraw().run(sender=bob)
+
+    tok0_md = TestHelper.make_metadata(
+        name="The Token Zero",
+        decimals=0,
+        symbol="TK0")
+    scenario.h2("admission 10 artworks")
+    for k in range(0, 10):
+        the_vote.admission(metadata=tok0_md, uploader=alice.address).run(sender=admin)
+    the_vote.admission(metadata=tok0_md, uploader=alice.address).run(sender=admin)
+
+    the_vote.set_transmission_limit(1).run(sender=admin)
+
+    scenario.h2("Create a lot of users, withdraw and vote with them")
+    the_vote.vote(artwork_id=0, amount=1, index=0, new_next=sp.variant("index", 1),
+                  new_previous=sp.variant("end", sp.unit)).run(sender=alice)
+    the_vote.vote(artwork_id=0, amount=1, index=0, new_next=sp.variant("index", 1),
+                  new_previous=sp.variant("end", sp.unit)).run(sender=bob)
+    the_vote.vote(artwork_id=10, amount=1, index=10, new_next=sp.variant("index", 1),
+                  new_previous=sp.variant("index", 0)).run(sender=bob)
+
+    scenario.h2("now mint the artworks/transmit the voters")
+    the_vote.mint_artworks(1).run(sender=admin, now=sp.timestamp(0).add_days(7).add_minutes(5))
+    scenario.h2("can not set transmission limit during minting")
+    the_vote.set_transmission_limit(100).run(sender=admin, valid=False)
 
     # TODO:
     #   make it impossible to change the transmission_limit during minting and add a test for it
