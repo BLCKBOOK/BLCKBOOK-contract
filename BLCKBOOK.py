@@ -251,7 +251,7 @@ class AuctionErrorMessage:
 
 INITIAL_BID = sp.mutez(900000)
 MINIMAL_BID = sp.mutez(100000)
-MINIMAL_AUCTION_DURATION = sp.int(1) # 1 hour
+MINIMAL_AUCTION_DURATION = sp.int(1) # 1 minute
 MAXIMAL_AUCTION_DURATION = sp.int(24*14) # 14 days
 AUCTION_EXTENSION_THRESHOLD = sp.int(60*5) # 5 minutes. Check whether we actually want this
 BID_STEP_THRESHOLD = sp.mutez(100000)
@@ -387,7 +387,7 @@ class AuctionHouseContract(sp.Contract):
         sp.verify(~(create_auction_request.auction_and_token_id < self.data.all_auctions), message=AuctionErrorMessage.CAN_NOT_CREATE_AN_AUCTION_TWICE)
         sp.verify(self.data.all_auctions == create_auction_request.auction_and_token_id, message=AuctionErrorMessage.AUCTION_ID_SHOULD_BE_CONSECUTIVE)
 
-        sp.verify(create_auction_request.end_timestamp  >= sp.now.add_hours(MINIMAL_AUCTION_DURATION), message=AuctionErrorMessage.END_DATE_TOO_SOON)
+        sp.verify(create_auction_request.end_timestamp  >= sp.now.add_minutes(MINIMAL_AUCTION_DURATION), message=AuctionErrorMessage.END_DATE_TOO_SOON)
         sp.verify(create_auction_request.end_timestamp  <= sp.now.add_hours(MAXIMAL_AUCTION_DURATION), message=AuctionErrorMessage.END_DATE_TOO_LATE)
         sp.verify(create_auction_request.bid_amount >= MINIMAL_BID, message=AuctionErrorMessage.BID_AMOUNT_TOO_LOW)
         sp.verify(~self.data.auctions.contains(create_auction_request.auction_and_token_id), message=AuctionErrorMessage.ID_ALREADY_IN_USE)
@@ -959,6 +959,7 @@ class TheVote(sp.Contract):
             divisor=sp.TNat,
             transmission_limit=sp.TNat,
             limit_counter = sp.TNat,
+            next_deadline_minutes = sp.TInt,
         ))
         self.init(
             administrator=administrator,
@@ -988,6 +989,7 @@ class TheVote(sp.Contract):
             divisor=sp.nat(10),
             transmission_limit=sp.nat(200),
             limit_counter = sp.nat(0),
+            next_deadline_minutes = sp.int(10080)
             # after origination, we have a week to admit artworks
         )
 
@@ -1078,6 +1080,13 @@ class TheVote(sp.Contract):
         """
         sp.verify(sp.sender == self.data.administrator, 'THE_VOTE_NOT_ADMIN')
         self.data.voter_money_pool_address = params
+
+    @sp.entry_point
+    def set_next_deadline_minutes(self, params):
+        sp.verify(sp.sender == self.data.administrator, 'THE_VOTE_NOT_ADMIN')
+        sp.set_type(params, sp.TInt)
+        sp.verify(params > sp.int(0), "THE_VOTE_MINUTES_MUST_BE_GREATER_0")
+        self.data.next_deadline_minutes = params
 
     @sp.entry_point
     def admission(self, metadata, uploader):
@@ -1299,7 +1308,7 @@ class TheVote(sp.Contract):
                     # create the Auction for it
                     sp.transfer(
                         sp.record(auction_and_token_id = current_index.value + token_index.value,
-                                  end_timestamp = sp.now.add_days(7),
+                                  end_timestamp = sp.now.add_minutes(self.data.next_deadline_minutes),
                                   voter_amount = voter_amount.value,
                                   uploader = self.data.artwork_data[artwork_id].uploader,
                                   bid_amount=sp.mutez(1000000)),
@@ -1346,7 +1355,7 @@ class TheVote(sp.Contract):
         # this means we minted all or there was nothing to mint, so we can start the next voting_cycle and reset the data
         sp.if sp.len(self.data.artworks_to_mint.elements()) == 0:
 
-            self.data.deadline = sp.now.add_days(7)
+            self.data.deadline = sp.now.add_minutes(self.data.next_deadline_minutes)
             self.data.ready_for_minting = False
             self.data.highest_vote_index = sp.nat(0)
             self.data.lowest_vote_index = sp.nat(0)
@@ -1354,7 +1363,7 @@ class TheVote(sp.Contract):
             # set the spray-bank to the next voting-period so an admin does not have to call this manually
             spray_bank_address = sp.contract(sp.TTimestamp, self.data.spray_bank_address,
                                                         entry_point="set_new_period").open_some()
-            sp.transfer(sp.now.add_days(7), sp.mutez(0), spray_bank_address)
+            sp.transfer(sp.now.add_minutes(self.data.next_deadline_minutes), sp.mutez(0), spray_bank_address)
 
             # we reset the votes and also the vote_register as we transmitted them for the winning artworks
             self.data.votes = sp.big_map(tkey=sp.TNat, tvalue=sp.TRecord(
@@ -3356,6 +3365,80 @@ def test():
     the_vote.mint_artworks(1).run(sender=admin, now=sp.timestamp(0).add_days(7).add_minutes(5))
     scenario.h2("can not set transmission limit during minting")
     the_vote.set_transmission_limit(100).run(sender=admin, valid=False)
+
+@sp.add_target(name="test set_next_deadline_minutes", kind="testing")
+def test():
+    scenario = sp.test_scenario()
+    scenario.h1("Test set_next_deadline_minutes")
+    scenario.table_of_contents()
+
+    admin = sp.test_account("Administrator")
+
+    (fa2, auction_house, voter_money_pool, the_vote, spray, bank) = TestHelper.build_contracts(admin, scenario)
+
+    bob = sp.test_account("Bob")
+    alice = sp.test_account("Alice")
+    dan = sp.test_account("Dan")
+
+    spray.mint(to_=bank.address, amount=1000, token=sp.variant("new", spray_metadata)).run(sender=admin)
+
+    bank.withdraw().run(sender=bob)
+    bank.withdraw().run(sender=alice)
+    bank.withdraw().run(sender=dan)
+
+    scenario.h2("Can not enter deadline minutes of 0 or lesser")
+    the_vote.set_next_deadline_minutes(0).run(sender=admin, valid=False)
+    the_vote.set_next_deadline_minutes(-10).run(sender=admin, valid=False)
+
+    tok0_md = TestHelper.make_metadata(
+        name = "The Token Zero",
+        decimals = 0,
+        symbol= "TK0")
+    scenario.h3("Admission the artwork")
+    the_vote.admission(metadata=tok0_md, uploader=alice.address).run(sender=admin)
+
+    TestHelper.test_vote(alice, the_vote, scenario, artwork_id=0, amount=1, index=0, new_next=-1, new_previous=-1)
+    TestHelper.test_vote(bob, the_vote, scenario, artwork_id=0, amount=1, index=0, new_next=-1, new_previous=-1)
+    TestHelper.test_vote(dan, the_vote, scenario, artwork_id=0, amount=1, index=0, new_next=-1, new_previous=-1)
+
+    the_vote.set_next_deadline_minutes(10).run(sender=admin)
+
+    the_vote.mint_artworks(1).run(sender=admin, now=sp.timestamp(0).add_days(7).add_minutes(1))
+    scenario.h3("View is not empty")
+    scenario.show(auction_house.get_expired_auctions(sp.timestamp(0).add_minutes(12).add_days(7)))
+
+    scenario.h3("end the auction before anyone has bid on it")
+    scenario += auction_house.end_auction(0).run(sender=admin, amount=sp.mutez(0), now=sp.timestamp(0).add_minutes(13).add_days(7))
+
+    scenario.h3("View is empty")
+    scenario.show(auction_house.get_expired_auctions(sp.timestamp(0).add_minutes(14).add_days(7)))
+
+    scenario.h3("transfer the item to bob from alice so we can see that she actually got it")
+    fa2.transfer(
+    [
+        BatchTransfer.item(from_ = alice.address,
+                            txs = [
+                                sp.record(to_ = bob.address,
+                                          amount = 1,
+                                          token_id = 0)
+                            ])
+    ]).run(sender = alice)
+
+    scenario.h3("Non of the voters can not withdraw because the auction got resolved but did not get bid on")
+    voter_money_pool.withdraw().run(sender=alice, valid=False)
+    voter_money_pool.withdraw().run(sender=bob, valid=False)
+    voter_money_pool.withdraw().run(sender=dan, valid=False)
+
+    tok1_md = TestHelper.make_metadata(
+        name = "The Token Zero",
+        decimals = 0,
+        symbol= "TK1" )
+
+    scenario.h2("Have an empty voting-cycle here")
+    the_vote.mint_artworks(0).run(sender=admin,  now=sp.timestamp(0).add_minutes(0).add_days(8))
+    scenario.h2("Admission again and after timeline check again")
+    the_vote.admission(metadata=tok1_md, uploader=alice.address).run(sender=admin, now=sp.timestamp(0).add_minutes(1).add_days(8))
+    the_vote.admission(metadata=tok1_md, uploader=alice.address).run(sender=admin, now=sp.timestamp(0).add_minutes(11).add_days(8), valid=False)
 
 # TODO:
 #   maybe add a can withdraw offchain-view for the spray-bank so we can see whether one can withdraw.
