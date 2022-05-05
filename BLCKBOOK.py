@@ -897,7 +897,7 @@ class SprayBank(sp.Contract):
     def withdraw(self):
         """
         withdraw spray tokens for SOURCE (not sender!) if they haven't withdrawn already (throws error otherwise)
-        Will only withdraw to the max_amount and not further (sitting on unspent tokens between voting cycles does not work)
+        Will only withdraw to the withdraw_limit and not further (sitting on unspent tokens between voting cycles does not work)
         """
         # 0 is the default value if someone has not withdrawn it is always smaller than the withdraw_period
         sp.verify(self.data.withdraw_period > self.data.withdrawls.get(sp.source, sp.nat(0)), '$PRAY_BANK_ALREADY_WITHDRAWN')
@@ -1184,7 +1184,7 @@ class TheVote(sp.Contract):
 
         sp.else:
             # we do not have the highest amount of votes and the new_previous variant is therefore index
-            # test that we have a lower vote amount than our previous (because the list is sorted we do not have to check against the highest amount)
+            # test that we have a lower or equal vote amount than our previous (because the list is sorted we do not have to check against the highest amount)
             sp.verify(new_vote_amount.value <= self.data.votes[new_previous.open_variant("index")].vote_amount, "THE_VOTE_HIGHER_VOTES_THAN_PREVIOUS")
 
             sp.if ~(new_previous.open_variant("index") == old_data.value.previous.open_variant("index")):
@@ -1247,7 +1247,7 @@ class TheVote(sp.Contract):
         :param max_amount sets how many artworks should be minted with the current call can be 0 to just set the data ready for minting
         """
 
-        sp.verify(sp.now > self.data.deadline, "THE_VOTE_ADMISSION_HAS_NOT_PASSED")
+        sp.verify(sp.now > self.data.deadline, "THE_VOTE_DEADLINE_NOT_PASSED")
 
         # the first mint call will setup the data for the minting
         sp.if ~self.data.ready_for_minting:
