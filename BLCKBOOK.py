@@ -1215,14 +1215,6 @@ class TheVote(sp.Contract):
                 # check that we still have a lower (<=) vote_amount than our previous
                 # if the old data previous is not "index" this is also wrong and will abort with an exception
                 sp.verify(new_vote_amount.value <= self.data.votes[old_data.value.previous.open_variant("index")].vote_amount, "THE_VOTE_TOO_MANY_VOTES" )
-                sp.if new_next.is_variant("end"):
-                    # so we still have the lowest amounts of votes. For this the lowest pointer must have been on us before
-                    sp.verify(self.data.lowest_vote_index == index, "THE_VOTE_NOT_LOWEST_VOTE_AMOUNT")
-                # we do not have the change the lowest vote index here
-                sp.else:
-                    # we do not have the lowest amounts of votes and are somewhere in the middle (without having a changed position)
-                    # check that our new_next (which is our old next... does not have a lower vote amount than ours (redudant)
-                    sp.verify(new_vote_amount.value > self.data.votes[new_next.open_variant("index")].vote_amount, "THE_VOTE_WRONG_NEXT")
 
         self.data.votes[index]=sp.record(artwork_id=artwork_id, vote_amount = new_vote_amount.value, next=new_next, previous=new_previous)
 
