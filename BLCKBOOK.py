@@ -544,7 +544,7 @@ class VoterMoneyPoolContract(sp.Contract):
 
         self.init_type(sp.TRecord(
                 administrator = sp.TAddress,
-                auctions = sp.TBigMap(sp.TNat, sp.TMutez),
+                resolved_auctions = sp.TBigMap(sp.TNat, sp.TMutez),
                 vote_map = sp.TBigMap(sp.TAddress, sp.TList(sp.TNat)),
                 metadata = sp.TBigMap(sp.TString, sp.TBytes),
                 auction_house_address = sp.TVariant(address=sp.TAddress, none=sp.TUnit),
@@ -552,7 +552,7 @@ class VoterMoneyPoolContract(sp.Contract):
 
         self.init(
             administrator = administrator,
-            auctions=sp.big_map(tkey=sp.TNat, tvalue = sp.TMutez),
+            resolved_auctions=sp.big_map(tkey=sp.TNat, tvalue = sp.TMutez),
             vote_map = sp.big_map(tkey=sp.TAddress, tvalue=sp.TList(sp.TNat)),
             metadata = sp.big_map(tkey = sp.TString, tvalue = sp.TBytes),
             auction_house_address = sp.variant("none", sp.unit)
@@ -578,8 +578,8 @@ class VoterMoneyPoolContract(sp.Contract):
             sp.verify(sp.source == self.data.administrator, VoterMoneyPoolErrorMessage.NOT_ADMIN)
 
         sp.set_type(params, SetAuctionRewardParams.get_type())
-        sp.verify(~self.data.auctions.contains(params.auction_and_token_id), VoterMoneyPoolErrorMessage.AUCTION_ALREADY_RESOLVED)
-        self.data.auctions[params.auction_and_token_id] = params.reward
+        sp.verify(~self.data.resolved_auctions.contains(params.auction_and_token_id), VoterMoneyPoolErrorMessage.AUCTION_ALREADY_RESOLVED)
+        self.data.resolved_auctions[params.auction_and_token_id] = params.reward
 
     @sp.entry_point
     def add_votes(self, votes):
@@ -595,11 +595,14 @@ class VoterMoneyPoolContract(sp.Contract):
         not_resolved_yet = sp.local('not_resolved_yet', sp.list([], t = sp.TNat))
         already_resolved = sp.local('already_resolved', sp.set({}, t = sp.TNat))
         sp.for auction in self.data.vote_map[sp.sender]:
-            sp.if self.data.auctions.contains(auction) & ~(already_resolved.value.contains(auction)):
-                sum.value = sum.value + self.data.auctions[auction]
+            # check that the auction is not in the already_resolved set so we do not add to the sum twice
+            # this helps prevent errors in the data (when a voter somehow voted twice for the same auction)
+            sp.if self.data.resolved_auctions.contains(auction) & ~(already_resolved.value.contains(auction)):
+                sum.value = sum.value + self.data.resolved_auctions[auction]
                 already_resolved.value.add(auction)
             sp.else:
-                not_resolved_yet.value.push(auction)
+                sp.if ~(already_resolved.value.contains(auction)):
+                    not_resolved_yet.value.push(auction)
 
         self.data.vote_map[sp.sender] = not_resolved_yet.value
 
@@ -621,8 +624,8 @@ class VoterMoneyPoolContract(sp.Contract):
         already_resolved = sp.local('already_resolved', sp.set({}, t = sp.TNat))
         sp.if self.data.vote_map.contains(address):
             sp.for auction in self.data.vote_map[address]:
-                sp.if self.data.auctions.contains(auction) & ~(already_resolved.value.contains(auction)):
-                    sum.value = sum.value + self.data.auctions[auction]
+                sp.if self.data.resolved_auctions.contains(auction) & ~(already_resolved.value.contains(auction)):
+                    sum.value = sum.value + self.data.resolved_auctions[auction]
                     already_resolved.value.add(auction)
         sp.result(sum.value)
 
@@ -1159,19 +1162,19 @@ class TheVote(sp.Contract):
 
         sp.if new_previous.is_variant("end"):
             # the new previous is 0 that means we now have the highest value
-            sp.verify(self.data.votes[self.data.highest_vote_index].vote_amount < new_vote_amount.value, "THE_VOTE_NOT_HIGHEST_VOTE_AMOUNT")
-            # set the previous of the formerly highest vote index to the new highest_vote_index
             sp.if index == self.data.highest_vote_index:
                 # we also were the highest_vote_index before. Assure that the next does not change
                 sp.verify(old_data.value.next == new_next, "THE_VOTE_WRONG_NEXT")
             sp.else:
-                # we weren't the highest vote amount before (this only works if there is more than 1 artwork)
-                # make sure that our new next is the previously highest rated artwork
+                # we weren't the highest vote amount before so check that we are it now
+                sp.verify(self.data.votes[self.data.highest_vote_index].vote_amount < new_vote_amount.value, "THE_VOTE_NOT_HIGHEST_VOTE_AMOUNT")
+                # this can only happen if there is more than 1 artwork, so it is okay to access new_next with open_variant("index") which will fail if it is end
+                # make sure that our new next was previously the highest rated artwork
                 sp.verify(new_next.open_variant("index") == self.data.highest_vote_index, "THE_VOTE_WRONG_NEXT_HIGHEST_AMOUNT")
                 # now set the previous of the formerly highest rated artwork
                 self.data.votes[self.data.highest_vote_index].previous = sp.variant("index", index)
                 # we also need to set the previous and next of our old_previous and old_next to reference each other
-                # if our old_next is index we net to set it's previous
+                # if our old_next set it's previous to our old previous
                 sp.if old_data.value.next.is_variant("index"):
                     self.data.votes[old_data.value.next.open_variant("index")].previous = old_data.value.previous
                 sp.else:
@@ -1187,7 +1190,7 @@ class TheVote(sp.Contract):
             # test that we have a lower or equal vote amount than our previous (because the list is sorted we do not have to check against the highest amount)
             sp.verify(new_vote_amount.value <= self.data.votes[new_previous.open_variant("index")].vote_amount, "THE_VOTE_HIGHER_VOTES_THAN_PREVIOUS")
 
-            sp.if ~(new_previous.open_variant("index") == old_data.value.previous.open_variant("index")):
+            sp.if new_previous.open_variant("index") != old_data.value.previous.open_variant("index"):
                 # we have a changed previous (we move up in the sort)
                 # we verify that the new_next is of variant index as we moved up in the sort
                 sp.verify(new_next.is_variant("index"), "THE_VOTE_WRONG_NEXT")
@@ -1214,14 +1217,14 @@ class TheVote(sp.Contract):
                 sp.verify(new_next == old_data.value.next, "THE_VOTE_WRONG_NEXT")
                 # check that we still have a lower (<=) vote_amount than our previous
                 # if the old data previous is not "index" this is also wrong and will abort with an exception
-                sp.verify(new_vote_amount.value <= self.data.votes[old_data.value.previous.open_variant("index")].vote_amount, "THE_VOTE_TOO_MANY_VOTES" )
+                sp.verify(new_vote_amount.value <= self.data.votes[old_data.value.previous.open_variant("index")].vote_amount, "THE_VOTE_TOO_MANY_VOTES")
 
-        self.data.votes[index]=sp.record(artwork_id=artwork_id, vote_amount = new_vote_amount.value, next=new_next, previous=new_previous)
+        self.data.votes[index] = sp.record(artwork_id = artwork_id, vote_amount = new_vote_amount.value, next = new_next, previous = new_previous)
+
+        self.data.vote_register[artwork_id].add(sp.sender)
 
         spray_contract = sp.contract(BatchTransfer.get_type(), self.data.spray_contract_address,
                                      entry_point="transfer").open_some("THE_VOTE_SPRAY_TRANSACTION_ERROR")
-
-        self.data.vote_register[artwork_id].add(sp.sender)
 
         # we now transfer the $PRAY tokens to the contract itself
         sp.transfer([BatchTransfer.item(sp.sender, [
