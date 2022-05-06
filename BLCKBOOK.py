@@ -447,6 +447,11 @@ class AuctionHouseContract(sp.Contract):
 
         sp.verify(sp.now > auction.end_timestamp, message=AuctionErrorMessage.AUCTION_IS_ONGOING)
 
+        # initialize voter_reward and voter_transaction to 0
+        # because we transmit it if no one bid on the auction, so it gets resolved in the data-structure of the VoterMoneyPool
+        voter_reward = sp.local("voter_reward", sp.nat(0))
+        voter_transaction = sp.local("voter_transaction", sp.nat(0))
+
         # somebody bid who isn't the uploader => we actually got value
         sp.if auction.bidder != auction.uploader:
             # calculation of the shares
@@ -454,11 +459,10 @@ class AuctionHouseContract(sp.Contract):
             percentage = sp.local("percentage", bid_amount.value // sp.nat(100))
             percentage_remainder = sp.local("percentage_remainder", bid_amount.value % sp.nat(100))
             uploader_reward = sp.local("uploader_reward", percentage.value * self.data.uploader_share)
-            # initialize these values with the total edge-case of voter_amount being 0 for a minted artwork
-            voter_reward = sp.local("voter_reward", sp.nat(0))
+
+            # initialize remainder2 with the total edge-case of voter_amount being 0 for a minted artwork, that was bid on
             # set the remainder2 to the actual total amount for the edge case of 0 voters
             remainder2 = sp.local("remainder2", percentage.value * self.data.voter_share)
-            voter_transaction = sp.local("voter_transaction", sp.nat(0))
 
             sp.if auction.voter_amount > 0:
                 # and in the normal case overwrite the values. Can't be done in if-else because of scope
@@ -468,15 +472,16 @@ class AuctionHouseContract(sp.Contract):
 
             blckbook_reward = sp.local("blckbook_reward", self.data.blckbook_share * percentage.value + percentage_remainder.value + remainder2.value)
 
-            voter_money_pool_contract = sp.contract(SetAuctionRewardParams.get_type(), self.data.voter_money_pool, entry_point = "set_auction_rewards").open_some()
-
             sp.send(auction.uploader, sp.utils.nat_to_mutez(uploader_reward.value))
             sp.send(self.data.blckbook_collector, sp.utils.nat_to_mutez(blckbook_reward.value))
-            sp.transfer(
-                sp.record(auction_and_token_id = auction_and_token_id, reward=sp.utils.nat_to_mutez(voter_reward.value)),
-                sp.utils.nat_to_mutez(voter_transaction.value),
-                voter_money_pool_contract,
-            )
+
+
+        voter_money_pool_contract = sp.contract(SetAuctionRewardParams.get_type(), self.data.voter_money_pool, entry_point = "set_auction_rewards").open_some()
+        sp.transfer(
+            sp.record(auction_and_token_id=auction_and_token_id, reward=sp.utils.nat_to_mutez(voter_reward.value)),
+            sp.utils.nat_to_mutez(voter_transaction.value),
+            voter_money_pool_contract,
+        )
 
         token_contract = sp.contract(BatchTransfer.get_type(), self.data.tokens_contract_address, entry_point = "transfer").open_some()
 
@@ -597,18 +602,18 @@ class VoterMoneyPoolContract(sp.Contract):
         sp.for auction in self.data.vote_map[sp.sender]:
             # check that the auction is not in the already_resolved set so we do not add to the sum twice
             # this helps prevent errors in the data (when a voter somehow voted twice for the same auction)
-            sp.if self.data.resolved_auctions.contains(auction) & ~(already_resolved.value.contains(auction)):
-                sum.value = sum.value + self.data.resolved_auctions[auction]
-                already_resolved.value.add(auction)
-            sp.else:
-                sp.if ~(already_resolved.value.contains(auction)):
+            sp.if ~(already_resolved.value.contains(auction)):
+                sp.if self.data.resolved_auctions.contains(auction):
+                    sum.value = sum.value + self.data.resolved_auctions[auction]
+                    already_resolved.value.add(auction)
+                sp.else:
                     not_resolved_yet.value.push(auction)
 
         self.data.vote_map[sp.sender] = not_resolved_yet.value
 
-        sp.if (sum.value > sp.mutez(0)):
+        sp.if sum.value > sp.mutez(0):
             sp.send(sp.sender, sum.value)
-        sp.else:
+        sp.if sp.len(already_resolved.value.elements()) == 0:
             sp.failwith(VoterMoneyPoolErrorMessage.ALL_VOTES_ALREADY_PAYED_OUT)
 
     @sp.entry_point
@@ -1024,7 +1029,7 @@ class TheVote(sp.Contract):
     @sp.entry_point
     def set_votes_transmission_limit(self, params):
         sp.verify(sp.sender == self.data.administrator, 'THE_VOTE_NOT_ADMIN')
-        sp.verify(~self.data.ready_for_minting, "THE_VOTE_CAN_NOT_SET_VOTES_TRANSMISSION_LIMIT_DURING_MINTING")
+        sp.verify(self.data.votes_transmission_batch_counter == 0, "THE_VOTE_CANT_SET_VOTES_TRANSMISSION_LIMIT_DURING_A_BATCH")
         sp.verify(params > 0, "THE_VOTE_VOTES_TRANSMISSION_LIMIT_CANT_BE_0")
         self.data.votes_transmission_limit = params
 
@@ -1245,6 +1250,7 @@ class TheVote(sp.Contract):
         sp.verify(sp.now > self.data.deadline, "THE_VOTE_DEADLINE_NOT_PASSED")
 
         # the first mint call will setup the data for the minting
+        # TODO move this to a separate endpoint
         sp.if ~self.data.ready_for_minting:
             self.data.artworks_to_mint = sp.set({}, t = sp.TNat)
 
@@ -2196,7 +2202,10 @@ def test():
                             ])
     ]).run(sender = alice)
 
-    scenario.h3("Alice can not withdraw because the auction got resolved but did not get bid on")
+    scenario.h3("Alice cleans up her data-structure")
+    voter_money_pool.withdraw().run(sender=alice)
+
+    scenario.h3("Alice now can not withdraw because the data-structure is empty")
     voter_money_pool.withdraw().run(sender=alice, valid=False)
 
     tok1_md = TestHelper.make_metadata(
@@ -2298,6 +2307,10 @@ def test():
     scenario.h3("Set theVote as admin of Auction_House again")
     auction_house.set_administrator(the_vote.address).run(sender=admin)
 
+    scenario.h3("Bob can not set the admin of Auction House through theVote cause he is not its admin")
+    bob = sp.test_account("Bob")
+    the_vote.set_admin_of_auction_contract(admin.address).run(sender=bob, valid=False)
+
     scenario.h2("Admin Sets for Voter_Money_Pool_House")
     scenario.h3("Set theVote as admin of Voter_Money_Pool")
     voter_money_pool.set_administrator(the_vote.address).run(sender=admin)
@@ -2305,6 +2318,10 @@ def test():
     the_vote.set_admin_of_pool_contract(admin.address).run(sender=admin)
     scenario.h3("Set theVote as admin of voter_money_pool again")
     voter_money_pool.set_administrator(the_vote.address).run(sender=admin)
+
+    scenario.h3("Bob can not set the admin of Voter Money Pool through theVote cause he is not its admin")
+    bob = sp.test_account("Bob")
+    the_vote.set_admin_of_pool_contract(admin.address).run(sender=bob, valid=False)
 
 @sp.add_target(name="Simple Artwork Admission", kind="testing")
 def test():
@@ -2370,7 +2387,7 @@ def test():
     spray.mint(to_= bob.address, amount = 1000, token = sp.variant("new", spray_metadata)).run(sender=bob, valid=False)
     scenario.h3("can mint the first $PRAY for alice")
     spray.mint(to_= alice.address, amount = 1000,token = sp.variant("new", spray_metadata)).run(sender=admin)
-    scenario.h3("can not mint a new token for bob as alice")
+    scenario.h3("can not mint a new token for bob as the single token contract")
     spray.mint(to_= bob.address, amount = 1000, token = sp.variant("new", spray_metadata)).run(sender=admin, valid=False)
     scenario.h3("But we can mint him existing ones")
     spray.mint(to_= bob.address, amount = 1000, token = sp.variant("existing", 0)).run(sender=admin)
@@ -2394,7 +2411,7 @@ def test():
         symbol= "TK0")
 
     scenario.h2("Vote Tests")
-    scenario.h3("Admin submits artwork")
+    scenario.h3("Admin submits artwork from bob")
     the_vote.admission(metadata = metadata, uploader = bob.address).run(sender=admin, valid=True)
 
     spray_metadata = TestHelper.make_metadata(
@@ -2402,10 +2419,9 @@ def test():
         decimals=0,
         symbol="$PRAY")
 
-    the_vote.set_spray_contract(spray.address).run(sender=admin)
-
     scenario.h3("we mint the first $PRAY for bob")
     spray.mint(to_=bob.address, amount=1000, token=sp.variant("new", spray_metadata)).run(sender=admin)
+    scenario.h3("Then we mint 1000 $PRAY for the bank")
     spray.mint(to_=bank.address, amount=1000, token=sp.variant("existing", 0)).run(sender=admin)
 
     spray.transfer([BatchTransfer.item(bob.address, [
@@ -2475,6 +2491,10 @@ def test():
 
     scenario.h2("Go to the next period and mint some more spray")
     spray.mint(to_=bank.address, amount=1000, token=sp.variant("existing", 0)).run(sender=admin)
+
+    scenario.h2("Only admin or mint can advance the period")
+    bank.set_new_period(sp.unit).run(sender=bob, valid=False)
+
     bank.set_new_period(sp.unit).run(sender=admin)
 
     scenario.h2("Now withdraw a bunch")
@@ -2530,7 +2550,7 @@ def test():
         symbol= "TK0")
 
     scenario.h2("Vote Tests")
-    scenario.h3("Admin submits 5 artworks")
+    scenario.h3("Admin submits 5 artworks - Caution admin can upload multiple times for the same wallet!")
     the_vote.admission(metadata=metadata, uploader=bob.address).run(sender=admin, valid=True)
     the_vote.admission(metadata=metadata, uploader=bob.address).run(sender=admin, valid=True)
     the_vote.admission(metadata=metadata, uploader=bob.address).run(sender=admin, valid=True)
@@ -2545,12 +2565,12 @@ def test():
 
     scenario.h3("now bob can not vote on these artworks anymore")
     the_vote.vote(artwork_id = 0, amount = 1, index = 0, new_next = sp.variant("index", 1), new_previous = sp.variant("end", sp.unit)).run(sender=bob, valid=False)
-    the_vote.vote(artwork_id = 1, amount = 1, index = 0, new_next = sp.variant("index", 0), new_previous = sp.variant("end", sp.unit)).run(sender=bob, valid=False)
-    the_vote.vote(artwork_id = 2, amount = 1, index = 0, new_next = sp.variant("index", 0), new_previous = sp.variant("end", sp.unit)).run(sender=bob, valid=False)
-    the_vote.vote(artwork_id = 3, amount = 1, index = 0, new_next = sp.variant("index", 0), new_previous = sp.variant("end", sp.unit)).run(sender=bob, valid=False)
-    the_vote.vote(artwork_id = 4, amount = 1, index = 0, new_next = sp.variant("index", 0), new_previous = sp.variant("end", sp.unit)).run(sender=bob, valid=False)
+    the_vote.vote(artwork_id = 1, amount = 1, index = 1, new_next = sp.variant("index", 0), new_previous = sp.variant("end", sp.unit)).run(sender=bob, valid=False)
+    the_vote.vote(artwork_id = 2, amount = 1, index = 2, new_next = sp.variant("index", 0), new_previous = sp.variant("end", sp.unit)).run(sender=bob, valid=False)
+    the_vote.vote(artwork_id = 3, amount = 1, index = 3, new_next = sp.variant("index", 0), new_previous = sp.variant("end", sp.unit)).run(sender=bob, valid=False)
+    the_vote.vote(artwork_id = 4, amount = 1, index = 4, new_next = sp.variant("index", 0), new_previous = sp.variant("end", sp.unit)).run(sender=bob, valid=False)
 
-    scenario.h3("So now we add new artworks")
+    scenario.h3("So now we add 10 new artworks")
     the_vote.admission(metadata=metadata, uploader=bob.address).run(sender=admin, valid=True)
     the_vote.admission(metadata=metadata, uploader=bob.address).run(sender=admin, valid=True)
     the_vote.admission(metadata=metadata, uploader=bob.address).run(sender=admin, valid=True)
@@ -2566,6 +2586,7 @@ def test():
 
     the_vote.vote(artwork_id = 5, amount = 1, index = 0, new_next = sp.variant("index", 1), new_previous = sp.variant("end", sp.unit)).run(
         sender=bob)
+    scenario.h4("Test the stable sort")
     the_vote.vote(artwork_id = 6, amount = 1, index = 1, new_next = sp.variant("index", 0), new_previous = sp.variant("end", sp.unit)).run(
         sender=bob, valid=False)
     the_vote.vote(artwork_id = 6, amount = 1, index = 1, new_next = sp.variant("index", 2), new_previous = sp.variant("index", 0)).run(
@@ -2581,24 +2602,20 @@ def test():
     the_vote.vote(artwork_id = 5, amount = 10, index = 0, new_next = sp.variant("index", 3), new_previous = sp.variant("index", 2)).run(
         sender=bob)
 
-    scenario.h3("we now send different votes to test the algorithm")
-
-
-    scenario.h3("now we mint the 2 NFTs")
-    the_vote.mint_artworks(2).run(sender=bob, now = sp.timestamp(0).add_days(16))
+    scenario.h3("Test that minting too many will not fail")
+    the_vote.mint_artworks(3).run(sender=bob, now=sp.timestamp(0).add_days(16))
     scenario.h3("Check that mint and setting up voting data does not work anymore")
     the_vote.mint_artworks(2).run(sender=bob, valid = False)
 
     the_vote.mint_artworks(0).run(sender=bob, valid=False)
 
-@sp.add_target(name="Edgecase THE_VOTE No Artwork", kind="testing")
+@sp.add_target(name="Edge case THE_VOTE No Artwork", kind="testing")
 def test():
     scenario = sp.test_scenario()
     scenario.h1("Edgecase THE_VOTE No Artwork")
     scenario.table_of_contents()
 
     admin = sp.test_account("Administrator")
-    admin_address = admin.address;
 
     (fa2, auction_house, voter_money_pool, the_vote, spray, bank) = TestHelper.build_contracts(admin, scenario)
 
@@ -2617,6 +2634,7 @@ def test():
 
     scenario.h3("Now the admission will make it")
     the_vote.admission(metadata=metadata, uploader=bob.address).run(sender=admin)
+    scenario.h3("And make sure that we can mint that submission")
     the_vote.mint_artworks(0).run(sender=admin, now=sp.timestamp(0).add_days(16))
 
 @sp.add_target(name="The_Vote Detailed Testing", kind="testing")
@@ -2667,30 +2685,34 @@ def test():
     scenario.h3("New_Next is end")
     the_vote.vote(artwork_id = 0, amount = 1, index = 0, new_next = sp.variant("end", sp.unit), new_previous = sp.variant("end", sp.unit)).run(sender=bob, valid=False)
 
-    scenario.h3("New_Next is index and too big")
+    scenario.h3("New_Next is index and too big (try to omit an element)")
     the_vote.vote(artwork_id = 0, amount = 1, index = 0, new_next = sp.variant("index", 2), new_previous = sp.variant("end", sp.unit)).run(sender=bob, valid=False)
 
     scenario.h3("New_Next is index and too little")
     the_vote.vote(artwork_id = 0, amount = 1, index = 0, new_next = sp.variant("index", 1), new_previous = sp.variant("end", sp.unit)).run(sender=bob)
     the_vote.vote(artwork_id = 1, amount = 1, index = 1, new_next = sp.variant("index", 2), new_previous = sp.variant("index", 0)).run(sender=bob)
     the_vote.vote(artwork_id = 2, amount = 1, index = 2, new_next = sp.variant("index", 1), new_previous = sp.variant("index", 1)).run(sender=bob, valid=False)
+    scenario.h3("New_Next is index but references the own element")
+    the_vote.vote(artwork_id = 2, amount = 1, index = 2, new_next = sp.variant("index", 2), new_previous = sp.variant("index", 1)).run(sender=bob, valid=False)
+
+    scenario.h3("New_Previous is index but references the own element")
+    the_vote.vote(artwork_id = 2, amount = 1, index = 2, new_next = sp.variant("index", 3), new_previous = sp.variant("index", 2)).run(sender=bob, valid=False)
 
     scenario.h3("New_Next would not be a stable sort")
     the_vote.vote(artwork_id = 3, amount = 1, index = 3, new_next = sp.variant("index", 1), new_previous = sp.variant("index", 0)).run(sender=bob, valid=False)
 
-
     scenario.h2("New_Previous is wrong")
     scenario.h3("New_previous is end")
-    the_vote.vote(artwork_id = 3, amount = 1, index = 3, new_next = sp.variant("index", 2), new_previous = sp.variant("end", sp.unit)).run(sender=bob, valid=False)
+    the_vote.vote(artwork_id = 3, amount = 1, index = 3, new_next = sp.variant("index", 0), new_previous = sp.variant("end", sp.unit)).run(sender=bob, valid=False)
 
     scenario.h3("New_previous is index and too big")
-    the_vote.vote(artwork_id = 2, amount = 1, index = 2, new_next = sp.variant("index", 3), new_previous = sp.variant("index", 3)).run(sender=bob, valid=False)
+    the_vote.vote(artwork_id = 2, amount = 1, index = 2, new_next = sp.variant("index", 4), new_previous = sp.variant("index", 3)).run(sender=bob, valid=False)
 
     scenario.h3("New_previous is index and too little")
     the_vote.vote(artwork_id = 2, amount = 1, index = 2, new_next = sp.variant("index", 3), new_previous = sp.variant("index", 0)).run(sender=bob, valid=False)
 
     scenario.h3("New_previous would not be a stable sort")
-    the_vote.vote(artwork_id = 2, amount = 1, index = 2, new_next = sp.variant("index", 3), new_previous = sp.variant("index", 0)).run(sender=bob, valid=False)
+    the_vote.vote(artwork_id = 2, amount = 1, index = 2, new_next = sp.variant("index", 1), new_previous = sp.variant("index", 0)).run(sender=bob, valid=False)
 
     scenario.h2("Become the highest voted artwork")
     the_vote.vote(artwork_id = 3, amount = 2, index = 3, new_next = sp.variant("index", 0), new_previous = sp.variant("end", sp.unit)).run(sender=alice)
@@ -2722,12 +2744,11 @@ def test():
     the_vote.admission(metadata=metadata, uploader=tim.address).run(sender=admin)
     the_vote.admission(metadata=metadata, uploader=susan.address).run(sender=admin)
 
-    bank.withdraw().run(sender=bob)
     bank.withdraw().run(sender=alice)
     bank.withdraw().run(sender=tim)
     bank.withdraw().run(sender=susan)
 
-    scenario.h3("Test with 0, 1, 0, 1, -1")
+    scenario.h3("Test with 0, 1, 0, 1, -1. Bob can vote because the withdraw happens during voting")
     TestHelper.test_vote(bob, the_vote, scenario, artwork_id=0, amount=1, index=0, new_next = 1, new_previous = -1)
     scenario.h3("Test with 1, 1, 1, 2, 0")
     TestHelper.test_vote(bob, the_vote, scenario, artwork_id = 1, amount = 1, index = 1, new_next = 2, new_previous = 0)
@@ -2748,12 +2769,16 @@ def test():
 
     scenario.h3("Always become the highest_voted_artwork")
     TestHelper.test_vote(tim, the_vote, scenario, artwork_id=4, amount=1, index=0, new_next=1, new_previous=-1)
+    # 4 5 6
     TestHelper.test_vote(tim, the_vote, scenario, artwork_id=5, amount=3, index=1, new_next=0, new_previous=-1)
+    # 5 4 6
     TestHelper.test_vote(alice, the_vote, scenario, artwork_id=6, amount=5, index=2, new_next=1, new_previous=-1)
+    # 6 5 4
 
     scenario.h3("stay the lowest-ranked artwork")
 
     TestHelper.test_vote(tim, the_vote, scenario, artwork_id=4, amount=1, index=0, new_next=-1, new_previous=1)
+    # 6 5 4
 
     scenario.h2("Mint top artwork, end the cycle")
     the_vote.mint_artworks(1).run(sender=admin, now=sp.timestamp(0).add_days(16))
@@ -2761,9 +2786,13 @@ def test():
     bank.withdraw().run(sender=alice)
     bank.withdraw().run(sender=tim)
     bank.withdraw().run(sender=susan)
-    the_vote.admission(metadata=metadata, uploader=bob.address).run(sender=admin)
+
+    scenario.h3("Can not vote for artwork that does not exist")
+    the_vote.vote(artwork_id = 0, amount = 1, index = 0, new_next = sp.variant("end", sp.unit), new_previous = sp.variant("end", sp.unit)).run(sender=bob, valid=False)
+    the_vote.vote(artwork_id = 7, amount = 1, index = 1, new_next = sp.variant("end", sp.unit), new_previous = sp.variant("end", sp.unit)).run(sender=bob, valid=False)
     
     scenario.h3("Add a bunch of votes to just a single artwork")
+    the_vote.admission(metadata=metadata, uploader=bob.address).run(sender=admin)
     TestHelper.test_vote(tim, the_vote, scenario, artwork_id=7, amount=1, index=0, new_next=-1, new_previous=-1)
     TestHelper.test_vote(tim, the_vote, scenario, artwork_id=7, amount=1, index=0, new_next=-1, new_previous=-1)
     TestHelper.test_vote(alice, the_vote, scenario, artwork_id=7, amount=1, index=0, new_next=-1, new_previous=-1)
@@ -2774,13 +2803,18 @@ def test():
     scenario.h3("Vote both of them to the same amount above the other new artwork - this will test stability of the sorting")
     TestHelper.test_vote(susan, the_vote, scenario, artwork_id=8, amount=4, index=1, new_next=0, new_previous=-1)
     TestHelper.test_vote(alice, the_vote, scenario, artwork_id=9, amount=4, index=2, new_next=0, new_previous=1)
+    # 1 2 0
     scenario.h3("Now vote for the first artwork so it also has the same amount of votes")
     TestHelper.test_vote(susan, the_vote, scenario, artwork_id=7, amount=1, index=0, new_next=-1, new_previous=2)
+    # 1 2 0
 
     scenario.h3("Now give all 3 artworks one more vote. Starting in the middle than the formerly first, than the last")
     TestHelper.test_vote(tim, the_vote, scenario, artwork_id=9, amount=1, index=2, new_next=1, new_previous=-1)
+    # 2 1 0
     TestHelper.test_vote(tim, the_vote, scenario, artwork_id=8, amount=1, index=1, new_next=0, new_previous=2)
+    # 2 1 0
     TestHelper.test_vote(tim, the_vote, scenario, artwork_id=7, amount=1, index=0, new_next=-1, new_previous=1)
+    # 2 1 0
 
 @sp.add_target(name="New Integration Tests", kind="integration")
 def test():
@@ -2811,7 +2845,7 @@ def test():
         name = "The Token Zero",
         decimals = 0,
         symbol= "TK0" )
-    scenario.h3("Mint the tokens")
+    scenario.h3("Admission a single artwork and vote for it 3 times")
     the_vote.admission(metadata=tok0_md, uploader=alice.address).run(sender=admin)
 
     TestHelper.test_vote(alice, the_vote, scenario, artwork_id=0, amount=1, index=0, new_next=-1, new_previous=-1)
@@ -2821,13 +2855,13 @@ def test():
     the_vote.mint_artworks(1).run(sender=admin, now=sp.timestamp(0).add_days(7).add_minutes(5))
 
     scenario.h3("View is not empty")
-    scenario.show(auction_house.get_expired_auctions(sp.timestamp(0).add_minutes(10).add_days(14)))
+    scenario.verify(sp.len(auction_house.get_expired_auctions(sp.timestamp(0).add_minutes(10).add_days(14))) > 0)
 
     scenario.h3("end the auction before anyone has bid on it")
     scenario += auction_house.end_auction(0).run(sender=admin, amount=sp.mutez(0), now=sp.timestamp(0).add_minutes(10).add_days(14))
 
     scenario.h3("View is empty")
-    scenario.show(auction_house.get_expired_auctions(sp.timestamp(0).add_minutes(11).add_days(14)))
+    scenario.verify(sp.len(auction_house.get_expired_auctions(sp.timestamp(0).add_minutes(11).add_days(14))) == 0)
 
     scenario.h3("transfer the item to bob from alice so we can see that she actually got it")
     fa2.transfer(
@@ -2840,7 +2874,12 @@ def test():
                             ])
     ]).run(sender = alice)
 
-    scenario.h3("Non of the voters can not withdraw because the auction got resolved but did not get bid on")
+    scenario.h3("Voters just clear up there data-structure as there is a sum of 0 to withdraw")
+    voter_money_pool.withdraw().run(sender=alice)
+    voter_money_pool.withdraw().run(sender=bob)
+    voter_money_pool.withdraw().run(sender=dan)
+
+    scenario.h3("Non of the voters can not withdraw because now the data-structure is empty")
     voter_money_pool.withdraw().run(sender=alice, valid=False)
     voter_money_pool.withdraw().run(sender=bob, valid=False)
     voter_money_pool.withdraw().run(sender=dan, valid=False)
@@ -2848,11 +2887,14 @@ def test():
     tok1_md = TestHelper.make_metadata(
         name = "The Token Zero",
         decimals = 0,
-        symbol= "TK1" )
+        symbol= "TK1")
 
-    scenario.h2("Have an empty voting-cycle here")
+    scenario.h2("Try to admission a new artwork when the deadline has passed")
+    the_vote.admission(metadata=tok1_md, uploader=alice.address).run(sender=admin, valid=False)
+
+    scenario.h2("Have an empty voting-cycle here because the deadline for it passed already")
     the_vote.mint_artworks(0).run(sender=admin)
-    scenario.h2("Admission/Mint a new token")
+    scenario.h2("Admission a new token")
     the_vote.admission(metadata=tok1_md, uploader=alice.address).run(sender=admin)
 
     scenario.h3("add the votes for the newly created auction")
@@ -2864,16 +2906,21 @@ def test():
     scenario.h3("dan bids")
     scenario += auction_house.bid(1).run(sender=dan,amount=sp.mutez(3000000), now=sp.timestamp(0).add_minutes(17).add_days(21))
 
-    scenario.h3("View has 1 in it")
-    scenario.show(auction_house.get_expired_auctions(sp.timestamp(0).add_minutes(19).add_days(28)))
+    scenario.h3("View is not empty")
+    scenario.verify(sp.len(auction_house.get_expired_auctions(sp.timestamp(0).add_minutes(19).add_days(28))) > 0)
+
+    scenario.h3("Try to withdraw before the amount gets resolved")
+    voter_money_pool.withdraw().run(sender=alice, valid=False)
+    voter_money_pool.withdraw().run(sender=bob, valid=False)
+    voter_money_pool.withdraw().run(sender=dan, valid=False)
 
     scenario.h3("end the auction")
     scenario += auction_house.end_auction(1).run(sender=admin, amount=sp.mutez(0), now=sp.timestamp(0).add_minutes(20).add_days(28))
 
     scenario.h3("View is empty again")
-    scenario.show(auction_house.get_expired_auctions(sp.timestamp(0).add_minutes(55).add_days(28)))
+    scenario.verify(sp.len(auction_house.get_expired_auctions(sp.timestamp(0).add_minutes(55).add_days(28))) == 0)
 
-    scenario.verify(auction_house.balance  == sp.mutez(0))
+    scenario.verify(auction_house.balance == sp.mutez(0))
 
     scenario.verify(voter_money_pool.balance == sp.mutez(450000))
     voter_money_pool.withdraw().run(sender=alice)
@@ -2886,7 +2933,7 @@ def test():
 @sp.add_target(name="Integration of a minted artwork with 0 votes", kind="integration")
 def test():
     scenario = sp.test_scenario()
-    scenario.h1("Integration of a minted artwork with ß votes")
+    scenario.h1("Integration of a minted artwork with 0 votes")
     scenario.table_of_contents()
 
     admin = sp.test_account("Administrator")
@@ -2912,20 +2959,33 @@ def test():
         name = "The Token Zero",
         decimals = 0,
         symbol= "TK0" )
-    scenario.h3("Mint the tokens")
+
+    scenario.h3("Admission the tokens")
     the_vote.admission(metadata=tok0_md, uploader=alice.address).run(sender=admin)
 
+    scenario.h3("Mint without votes")
     the_vote.mint_artworks(1).run(sender=admin, now=sp.timestamp(0).add_days(7).add_minutes(5))
 
     scenario.h3("dan bids")
     scenario += auction_house.bid(0).run(sender=dan,amount=sp.mutez(3000000), now=sp.timestamp(0).add_minutes(6).add_days(8))
 
-    scenario.h3("end the auction before anyone has bid on it")
+    scenario.h3("end the auction")
     scenario += auction_house.end_auction(0).run(sender=admin, amount=sp.mutez(0), now=sp.timestamp(0).add_minutes(10).add_days(14))
 
     scenario.h3("Make sure that neither the auction_house nor the voter_money_pool hold mutez")
     scenario.verify(auction_house.balance == sp.mutez(0))
     scenario.verify(voter_money_pool.balance == sp.mutez(0))
+
+    scenario.h3("transfer the item from dan to alice as he now should have it")
+    fa2.transfer(
+    [
+        BatchTransfer.item(from_ = dan.address,
+                            txs = [
+                                sp.record(to_ = alice.address,
+                                          amount = 1,
+                                          token_id = 0)
+                            ])
+    ]).run(sender = dan)
 
 @sp.add_target(name="Integration Test for a lot of artwork submissions", kind="integration")
 def test():
@@ -2956,9 +3016,9 @@ def test():
         name = "The Token Zero",
         decimals = 0,
         symbol= "TK0" )
-    scenario.h3("Admit 100 artworks")
+    scenario.h3("Admit 50 artworks")
     for i in range (0, 50):
-        # yes we can admission 100 artworks from the same uploader
+        # yes we can admit 50 artworks from the same uploader
         the_vote.admission(metadata=tok0_md, uploader=alice.address).run(sender=admin)
 
     scenario.h2("vote for 3 of them")
@@ -3052,20 +3112,7 @@ def test():
 
     (fa2, auction_house, voter_money_pool, the_vote, spray, bank) = TestHelper.build_contracts(admin, scenario)
 
-    bob = sp.test_account("Bob")
     alice = sp.test_account("Alice")
-    dan = sp.test_account("Dan")
-
-    # Let's display the accounts:
-    scenario.h2("Accounts")
-    scenario.show([admin, alice, bob, dan])
-    spray.mint(to_=bank.address, amount=1000, token=sp.variant("new", spray_metadata)).run(sender=admin)
-
-    scenario.h2("3 Votes for an NFT that doesn't get bid on")
-    # that means we have to first admission an artwork. Then let 3 people vote on it
-    bank.withdraw().run(sender=bob)
-    bank.withdraw().run(sender=alice)
-    bank.withdraw().run(sender=dan)
 
     tok0_md = TestHelper.make_metadata(
         name = "The Token Zero",
@@ -3088,7 +3135,7 @@ def test():
     scenario = sp.test_scenario()
     scenario.h1("Integration Tests for votes_transmission_limit")
     scenario.table_of_contents()
-    voter_amount = 3
+    voter_amount = 11
 
     admin = sp.test_account("Administrator")
 
@@ -3120,13 +3167,18 @@ def test():
     bank.withdraw().run(sender=alice, valid=False)
 
     scenario.h2("now mint the artworks/transmit the voters")
-    for k in range(0, 3):
+    for k in range(0, voter_amount):
         the_vote.mint_artworks(1).run(sender=admin, now=sp.timestamp(0).add_days(7).add_minutes(5))
+        if 0 < k < voter_amount - 1:
+            the_vote.set_votes_transmission_limit(10).run(sender=admin, valid=False)
 
     scenario.h3("the vote minting should be completed")
     the_vote.mint_artworks(0).run(sender=admin, valid=False, now=sp.timestamp(0).add_days(7).add_minutes(6))
 
-    bid_amount = 100000000
+    bid_amount = 100000000 * 15 * voter_amount
+    scenario.h3("Alice can not bid on her artwork")
+    scenario += auction_house.bid(0).run(sender=alice,amount=sp.mutez(bid_amount), now=sp.timestamp(0).add_minutes(6).add_days(8), valid=False)
+    scenario.h3("But bob can")
     scenario += auction_house.bid(0).run(sender=bob,amount=sp.mutez(bid_amount), now=sp.timestamp(0).add_minutes(6).add_days(8))
 
     scenario.verify(voter_money_pool.balance == sp.mutez(0))
@@ -3186,6 +3238,13 @@ def test():
 
     scenario.h2("now mint the artworks/transmit the voters")
     the_vote.mint_artworks(1).run(sender=admin, now=sp.timestamp(0).add_days(7).add_minutes(5))
+
+    scenario.h3("can not vote during minting")
+    the_vote.vote(artwork_id=0, amount=1, index=0, new_next=sp.variant("index", 1),
+                  new_previous=sp.variant("end", sp.unit)).run(sender=alice, valid=False)
+    scenario.h3("can not admission during minting")
+    the_vote.admission(metadata=tok0_md, uploader=alice.address).run(sender=admin, valid=False)
+
     the_vote.mint_artworks(1).run(sender=admin, now=sp.timestamp(0).add_days(7).add_minutes(5))
     scenario.verify(fa2.count_tokens() == 1)
 
@@ -3214,7 +3273,7 @@ def test():
         symbol="TK11")
     scenario.h2("admission 1 artwork")
     the_vote.admission(metadata=tok11_md, uploader=alice.address).run(sender=admin)
-    the_vote.set_votes_transmission_limit(3).run(sender=admin)
+    the_vote.set_votes_transmission_limit(voter_amount).run(sender=admin)
 
     scenario.h2("test with voters-amount equal to the limit")
     users = []
@@ -3230,7 +3289,7 @@ def test():
     the_vote.mint_artworks(1).run(sender=admin, now=sp.timestamp(0).add_days(7).add_minutes(6), valid=False)
 
     scenario.h2("test with voters-amount 1 bigger than the limit")
-    the_vote.set_votes_transmission_limit(2).run(sender=admin)
+    the_vote.set_votes_transmission_limit(voter_amount - 1).run(sender=admin)
     the_vote.admission(metadata=tok11_md, uploader=alice.address).run(sender=admin, now=sp.timestamp(0).add_days(8))
     for j in range (0, voter_amount):
         # we create a user, withdraw with them and vote with them.
@@ -3243,7 +3302,7 @@ def test():
     the_vote.mint_artworks(1).run(sender=admin, now=sp.timestamp(0).add_days(16).add_minutes(6), valid=False)
 
     scenario.h2("test with voters-amount smaller 1 than the limit")
-    the_vote.set_votes_transmission_limit(4).run(sender=admin)
+    the_vote.set_votes_transmission_limit(voter_amount + 1).run(sender=admin)
     the_vote.admission(metadata=tok11_md, uploader=alice.address).run(sender=admin, now=sp.timestamp(0).add_days(8))
     for k in range (0, voter_amount):
         # we create a user, withdraw with them and vote with them.
@@ -3262,7 +3321,6 @@ def test():
     voter_amount = 300
     votes_transmission_limit = 3
     factor = int(voter_amount/votes_transmission_limit)
-
 
     admin = sp.test_account("Administrator")
 
@@ -3341,8 +3399,9 @@ def test():
     the_vote.admission(metadata=tok0_md, uploader=alice.address).run(sender=admin)
 
     the_vote.set_votes_transmission_limit(1).run(sender=admin)
+    the_vote.set_votes_transmission_limit(0).run(sender=admin, valid=False)
 
-    scenario.h2("Create a lot of users, withdraw and vote with them")
+    scenario.h2("Vote for one of the artworks 3 times")
     the_vote.vote(artwork_id=0, amount=1, index=0, new_next=sp.variant("index", 1),
                   new_previous=sp.variant("end", sp.unit)).run(sender=alice)
     the_vote.vote(artwork_id=0, amount=1, index=0, new_next=sp.variant("index", 1),
@@ -3394,13 +3453,13 @@ def test():
 
     the_vote.mint_artworks(1).run(sender=admin, now=sp.timestamp(0).add_days(7).add_minutes(1))
     scenario.h3("View is not empty")
-    scenario.show(auction_house.get_expired_auctions(sp.timestamp(0).add_minutes(12).add_days(7)))
+    scenario.verify(sp.len(auction_house.get_expired_auctions(sp.timestamp(0).add_minutes(12).add_days(7))) > 0)
 
     scenario.h3("end the auction before anyone has bid on it")
     scenario += auction_house.end_auction(0).run(sender=admin, amount=sp.mutez(0), now=sp.timestamp(0).add_minutes(13).add_days(7))
 
     scenario.h3("View is empty")
-    scenario.show(auction_house.get_expired_auctions(sp.timestamp(0).add_minutes(14).add_days(7)))
+    scenario.verify(sp.len(auction_house.get_expired_auctions(sp.timestamp(0).add_minutes(14).add_days(7))) == 0)
 
     scenario.h3("transfer the item to bob from alice so we can see that she actually got it")
     fa2.transfer(
@@ -3412,6 +3471,11 @@ def test():
                                           token_id = 0)
                             ])
     ]).run(sender = alice)
+
+    scenario.h3("Voters clear up their data-structure")
+    voter_money_pool.withdraw().run(sender=alice)
+    voter_money_pool.withdraw().run(sender=bob)
+    voter_money_pool.withdraw().run(sender=dan)
 
     scenario.h3("Non of the voters can not withdraw because the auction got resolved but did not get bid on")
     voter_money_pool.withdraw().run(sender=alice, valid=False)
@@ -3432,3 +3496,4 @@ def test():
 # TODO:
 #   (maybe let the_vote transmit spray back to the bank)
 #   this could happen either when voting or at the end of the voting-cycle on the last mint
+#   add an error message to every .open_some()
