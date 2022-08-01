@@ -902,13 +902,21 @@ class SprayBank(sp.Contract):
         self.data.withdraw_period += 1
 
     @sp.entry_point
+    def register_user(self, params):
+        sp.verify(sp.sender == self.data.administrator, '$PRAY_BANK_NOT_ADMIN')
+        sp.set_type(params, sp.TAddress)
+        # maybe this checking step can be omitted to save gas because this method has to be called for every registered user
+        sp.verify(~self.data.withdrawls.contains(params), '$PRAY_BANK_USER_ALREADY_REGISTERED')
+        self.data.withdrawls[params] = sp.nat(0)
+
+    @sp.entry_point
     def withdraw(self):
         """
         withdraw spray tokens for SOURCE (not sender!) if they haven't withdrawn already (throws error otherwise)
         Will only withdraw to the withdraw_limit and not further (sitting on unspent tokens between voting cycles does not work)
         """
-        # 0 is the default value if someone has not withdrawn it is always smaller than the withdraw_period
-        sp.verify(self.data.withdraw_period > self.data.withdrawls.get(sp.source, sp.nat(0)), '$PRAY_BANK_ALREADY_WITHDRAWN')
+        # check that the voter is registered and is allowed to withdraw in the current_period
+        sp.verify(self.data.withdraw_period > self.data.withdrawls.get(sp.source, None, '$PRAY_BANK_NOT_REGISTERED'), '$PRAY_BANK_ALREADY_WITHDRAWN')
         current_amount = sp.local("current_amount", sp.view("get_balance", self.data.spray_address, sp.record(owner=sp.source, token_id=sp.nat(0)), sp.TNat).open_some("$PRAY_BANK_INVALID_VIEW"))
         withdraw_amount = sp.local("withdraw_amount", self.data.withdraw_limit - current_amount.value)
 
@@ -923,9 +931,10 @@ class SprayBank(sp.Contract):
 
     @sp.onchain_view(pure=True)
     def can_withdraw(self):
-        """(Onchain view) Return whether `operator` is allowed to transfer `token_id` tokens
-        owned by `owner`."""
-        sp.result(self.data.withdraw_period > self.data.withdrawls.get(sp.source, sp.nat(0)))
+        sp.if self.data.withdrawls.contains(sp.source):
+            sp.result(self.data.withdraw_period > self.data.withdrawls.get(sp.source))
+        sp.else:
+            sp.result(sp.bool(False))
 
 class TheVote(sp.Contract):
     def __init__(self, administrator, tokens_contract_address, auction_house_address, voter_money_pool_address, spray_bank_address, spray_contract_address, deadline):
@@ -2461,17 +2470,23 @@ def test():
     bob = sp.test_account("Bob")
     spray.mint(to_=bank.address, amount=10, token=sp.variant("new", spray_metadata)).run(sender=admin)
 
+    scenario.h2("Bob should not be able to withdraw if not registered")
+    bank.withdraw().run(sender=bob, valid=False)
+
     scenario.h2("Bob should be able to withdraw once")
+    bank.register_user(bob.address).run(sender=admin)
     bank.withdraw().run(sender=bob)
     bank.withdraw().run(sender=bob, valid=False)
 
     scenario.h2("We create alice and check if she can withdraw once")
     alice = sp.test_account("Alice")
+    bank.register_user(alice.address).run(sender=admin)
     bank.withdraw().run(sender=alice)
     bank.withdraw().run(sender=alice, valid=False)
 
     scenario.h2("We now create tim who runs out of luck because the bank is empty")
     tim = sp.test_account("Tim")
+    bank.register_user(tim.address).run(sender=admin)
     bank.withdraw().run(sender=tim, valid=False)
 
     scenario.h2("check that the withdraw amount cannot be set to 0")
@@ -2485,6 +2500,7 @@ def test():
 
     scenario.h2("Susan can withdraw if we set the amount to 1")
     susan = sp.test_account("Susan")
+    bank.register_user(susan.address).run(sender=admin)
     bank.withdraw().run(sender=susan, valid=False)
     bank.set_withdraw_limit(1).run(sender=admin)
     bank.withdraw().run(sender=susan)
@@ -2663,6 +2679,11 @@ def test():
     the_vote.admission(metadata=metadata, uploader=tim.address).run(sender=admin)
     the_vote.admission(metadata=metadata, uploader=susan.address).run(sender=admin)
 
+    bank.register_user(bob.address).run(sender=admin)
+    bank.register_user(alice.address).run(sender=admin)
+    bank.register_user(tim.address).run(sender=admin)
+    bank.register_user(susan.address).run(sender=admin)
+
     bank.withdraw().run(sender=bob)
     bank.withdraw().run(sender=alice)
     bank.withdraw().run(sender=tim)
@@ -2744,6 +2765,10 @@ def test():
     the_vote.admission(metadata=metadata, uploader=tim.address).run(sender=admin)
     the_vote.admission(metadata=metadata, uploader=susan.address).run(sender=admin)
 
+    bank.register_user(alice.address).run(sender=admin)
+    bank.register_user(tim.address).run(sender=admin)
+    bank.register_user(susan.address).run(sender=admin)
+    bank.register_user(bob.address).run(sender=admin)
     bank.withdraw().run(sender=alice)
     bank.withdraw().run(sender=tim)
     bank.withdraw().run(sender=susan)
@@ -2837,6 +2862,9 @@ def test():
 
     scenario.h2("3 Votes for an NFT that doesn't get bid on")
     # that means we have to first admission an artwork. Then let 3 people vote on it
+    bank.register_user(bob.address).run(sender=admin)
+    bank.register_user(alice.address).run(sender=admin)
+    bank.register_user(dan.address).run(sender=admin)
     bank.withdraw().run(sender=bob)
     bank.withdraw().run(sender=alice)
     bank.withdraw().run(sender=dan)
@@ -2951,6 +2979,9 @@ def test():
 
     scenario.h2("0 votes for an NFT that does get bid on")
     # that means we have to first admission an artwork. Then let 3 people vote on it
+    bank.register_user(bob.address).run(sender=admin)
+    bank.register_user(alice.address).run(sender=admin)
+    bank.register_user(dan.address).run(sender=admin)
     bank.withdraw().run(sender=bob)
     bank.withdraw().run(sender=alice)
     bank.withdraw().run(sender=dan)
@@ -3008,6 +3039,9 @@ def test():
 
     scenario.h2("3 Votes for an NFT that doesn't get bid on")
     # that means we have to first admission an artwork. Then let 3 people vote on it
+    bank.register_user(bob.address).run(sender=admin)
+    bank.register_user(alice.address).run(sender=admin)
+    bank.register_user(dan.address).run(sender=admin)
     bank.withdraw().run(sender=bob)
     bank.withdraw().run(sender=alice)
     bank.withdraw().run(sender=dan)
@@ -3072,12 +3106,14 @@ def test():
     for i in range (0, voter_amount):
         # we create a user, withdraw with them and vote with them.
         user = sp.test_account(str(i))
+        bank.register_user(user.address).run(sender=admin)
         bank.withdraw().run(sender=user)
         the_vote.vote(artwork_id=0, amount=5, index=0, new_next=sp.variant("end", sp.unit),
                       new_previous=sp.variant("end", sp.unit)).run(sender=user)
         users.append(user)
 
     scenario.h3("Alice can not withdraw because the bank is empty")
+    bank.register_user(alice.address).run(sender=admin)
     bank.withdraw().run(sender=alice, valid=False)
 
     scenario.h2("now mint the artwork in 3 calls because of the limit")
@@ -3158,12 +3194,14 @@ def test():
     for i in range (0, voter_amount):
         # we create a user, withdraw with them and vote with them.
         user = sp.test_account(str(i))
+        bank.register_user(user.address).run(sender=admin)
         bank.withdraw().run(sender=user)
         the_vote.vote(artwork_id=0, amount=5, index=0, new_next=sp.variant("end", sp.unit),
                       new_previous=sp.variant("end", sp.unit)).run(sender=user)
         users.append(user)
 
     scenario.h3("Alice can not withdraw because the bank is empty")
+    bank.register_user(alice.address).run(sender=admin)
     bank.withdraw().run(sender=alice, valid=False)
 
     scenario.h2("now mint the artworks/transmit the voters")
@@ -3210,6 +3248,8 @@ def test():
     alice = sp.test_account("Alice")
 
     spray.mint(to_=bank.address, amount=voter_amount * 5, token=sp.variant("new", spray_metadata)).run(sender=admin)
+    bank.register_user(alice.address).run(sender=admin)
+    bank.register_user(bob.address).run(sender=admin)
     bank.withdraw().run(sender=alice)
     bank.withdraw().run(sender=bob)
 
@@ -3278,8 +3318,9 @@ def test():
     scenario.h2("test with voters-amount equal to the limit")
     users = []
     for i in range (0, voter_amount):
-        # we create a user, withdraw with them and vote with them.
+        # we create a user, register them, withdraw with them and vote with them.
         user = sp.test_account(str(i))
+        bank.register_user(user.address).run(sender=admin)
         bank.withdraw().run(sender=user)
         the_vote.vote(artwork_id=0, amount=5, index=0, new_next=sp.variant("end", sp.unit),
                       new_previous=sp.variant("end", sp.unit)).run(sender=user)
@@ -3292,7 +3333,7 @@ def test():
     the_vote.set_votes_transmission_limit(voter_amount - 1).run(sender=admin)
     the_vote.admission(metadata=tok11_md, uploader=alice.address).run(sender=admin, now=sp.timestamp(0).add_days(8))
     for j in range (0, voter_amount):
-        # we create a user, withdraw with them and vote with them.
+        # we withdraw and vote again
         bank.withdraw().run(sender=users[j], now=sp.timestamp(0).add_days(9))
         the_vote.vote(artwork_id=1, amount=5, index=0, new_next=sp.variant("end", sp.unit),
                       new_previous=sp.variant("end", sp.unit)).run(sender=users[j])
@@ -3305,7 +3346,7 @@ def test():
     the_vote.set_votes_transmission_limit(voter_amount + 1).run(sender=admin)
     the_vote.admission(metadata=tok11_md, uploader=alice.address).run(sender=admin, now=sp.timestamp(0).add_days(8))
     for k in range (0, voter_amount):
-        # we create a user, withdraw with them and vote with them.
+        # we withdraw and vote again
         bank.withdraw().run(sender=users[k], now=sp.timestamp(0).add_days(18))
         the_vote.vote(artwork_id=2, amount=5, index=0, new_next=sp.variant("end", sp.unit),
                       new_previous=sp.variant("end", sp.unit)).run(sender=users[k])
@@ -3342,6 +3383,7 @@ def test():
     for i in range (0, voter_amount):
         # we create a user, withdraw with them and vote with them.
         user = sp.test_account(str(i))
+        bank.register_user(user.address).run(sender=admin)
         bank.withdraw().run(sender=user)
         the_vote.vote(artwork_id=0, amount=1, index=0, new_next=sp.variant("end", sp.unit),
                       new_previous=sp.variant("end", sp.unit)).run(sender=user)
@@ -3386,6 +3428,8 @@ def test():
     alice = sp.test_account("Alice")
 
     spray.mint(to_=bank.address, amount=voter_amount * 5, token=sp.variant("new", spray_metadata)).run(sender=admin)
+    bank.register_user(bob.address).run(sender=admin)
+    bank.register_user(alice.address).run(sender=admin)
     bank.withdraw().run(sender=alice)
     bank.withdraw().run(sender=bob)
 
@@ -3430,6 +3474,9 @@ def test():
 
     spray.mint(to_=bank.address, amount=1000, token=sp.variant("new", spray_metadata)).run(sender=admin)
 
+    bank.register_user(bob.address).run(sender=admin)
+    bank.register_user(alice.address).run(sender=admin)
+    bank.register_user(dan.address).run(sender=admin)
     bank.withdraw().run(sender=bob)
     bank.withdraw().run(sender=alice)
     bank.withdraw().run(sender=dan)
