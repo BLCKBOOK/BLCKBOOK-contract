@@ -1513,30 +1513,36 @@ def test():
     scenario.h1("For origination")
     scenario.table_of_contents()
 
+    scenario.h2("FA2")
     fa2 = TokensContract(admin_address)
     scenario += fa2
 
+    scenario.h2("VoterMoneyPool")
     voter_money_pool = VoterMoneyPoolContract(admin_address)
     scenario += voter_money_pool
 
+    scenario.h2("AuctionHouse")
     auction_house = AuctionHouseContract(administrator=admin_address,
         voter_money_pool = sp.address('KT1XeA6tZYeBCm7aux3SAPswTuRE72R3VUCW'),
         blckbook_collector = admin_address,
         tokens_contract_address = sp.address('KT1HAtdXKvXqK2He3Xr2xmHQ9cYrxPTL7X9Z'))
     scenario += auction_house
 
+    scenario.h2("TheVote")
     the_vote = TheVote(administrator=admin_address,
         tokens_contract_address = sp.address('KT1HAtdXKvXqK2He3Xr2xmHQ9cYrxPTL7X9Z'),
-        auction_house_address=sp.address('KT1XeA6tZYeBCm7aux3SAPswTuRE72R3VUCW'),
-        voter_money_pool_address=sp.address('KT1XeA6tZYeBCm7aux3SAPswTuRE72R3VUCW'),
-        spray_bank_address=sp.address('KT1XeA6tZYeBCm7aux3SAPswTuRE72R3VUCW'),
-        spray_contract_address=sp.address('KT1XeA6tZYeBCm7aux3SAPswTuRE72R3VUCW'),
+        auction_house_address=sp.address('KT1XeA6tZYeBCm7aux3SAPswTuRE72R3VXZ1'),
+        voter_money_pool_address=sp.address('KT1XeA6tZYeBCm7aux3SAPswTuRE72R3VZZZ'),
+        spray_bank_address=sp.address('KT1XeA6tZYeBCm7aux3SAPswTuRE72R3V111'),
+        spray_contract_address=sp.address('KT1XeA6tZYeBCm7aux3SAPswTuRE72R3V212'),
         deadline=sp.now.add_days(7))
     scenario += the_vote
 
+    scenario.h2("Spray")
     spray = FA2Spray(admin_address, the_vote.address, metadata_base, "https//example.com")
     scenario += spray
 
+    scenario.h2("Bank")
     bank = SprayBank(administrator=admin_address, spray_address=spray.address, the_vote_address=admin_address)
     scenario += bank
 
