@@ -985,6 +985,9 @@ class TheVote(sp.Contract):
             votes_transmission_limit=sp.TNat,
             votes_transmission_batch_counter=sp.TNat,
             next_deadline_minutes=sp.TInt,
+            minting_ready_limit=sp.TNat,
+            minting_ready_index=sp.TNat,
+            minting_ready_batch_counter=sp.TNat,
         ))
         self.init(
             administrator=administrator,
@@ -1014,7 +1017,10 @@ class TheVote(sp.Contract):
             minting_ratio=sp.nat(10),
             votes_transmission_limit=sp.nat(200),
             votes_transmission_batch_counter = sp.nat(0),
-            next_deadline_minutes = sp.int(10080)
+            next_deadline_minutes = sp.int(10080),
+            minting_ready_limit= sp.nat(200),
+            minting_ready_index= sp.nat(0),
+            minting_ready_batch_counter= sp.nat(0)
             # after origination, we have a week to admit artworks
         )
 
@@ -1034,6 +1040,13 @@ class TheVote(sp.Contract):
         sp.verify(params > 1, "THE_VOTE_MINTING_RATIO_MUST_BE_GREATER_THAN_1")
         # can not be 1 because of the math in setup_data_for_voting
         self.data.minting_ratio = params
+
+    @sp.entry_point
+    def set_minting_ready_limit(self, params):
+        sp.verify(sp.sender == self.data.administrator, 'THE_VOTE_NOT_ADMIN')
+        sp.verify(self.data.minting_ready_batch_counter == 0, "THE_VOTE_CANT_SET_MINTING_READY_LIMIT_DURING_A_BATCH")
+        sp.verify(params > 0, "THE_VOTE_MINTING_READY_LIMIT_CANT_BE_0")
+        self.data.minting_ready_limit = params
 
     @sp.entry_point
     def set_votes_transmission_limit(self, params):
@@ -1246,6 +1259,56 @@ class TheVote(sp.Contract):
                     sp.mutez(0), spray_contract)
 
     @sp.entry_point
+    def ready_for_minting(self):
+        sp.verify(sp.now > self.data.deadline, "THE_VOTE_DEADLINE_NOT_PASSED")
+        sp.verify(~self.data.ready_for_minting, "THE_VOTE_READY_FOR_MINTING_ONLY_ONCE")
+
+        #if there are no admissions we do not need to continue
+        sp.if self.data.admissions_this_period > 0:
+            sp.if self.data.minting_ready_batch_counter == sp.nat(0):
+                self.data.artworks_to_mint = sp.set({}, t=sp.TNat)
+            # +1 because we want to mint at least one artwork every period
+            quotient = sp.local("quotient", (self.data.admissions_this_period // self.data.minting_ratio) + sp.nat(1))
+            # x counts the artworks for minting
+            x = sp.local("x", sp.nat(0))
+            # set the next_index to the highest vote index (the votes are sorted)
+            next_index = sp.local("next_index", self.data.highest_vote_index)
+
+            this_run_max = sp.local("this_run_max", sp.nat(0))
+
+            sp.if quotient.value > self.data.minting_ready_limit:
+                sp.if quotient.value > (self.data.minting_ready_limit * (self.data.minting_ready_batch_counter + sp.nat(1))):
+                    # we have at least the entire batch to go. This means we are not ready_for_minting afterwards
+                    this_run_max.value = self.data.minting_ready_limit
+                    self.data.minting_ready_batch_counter += 1 # check whether this is okay here
+                sp.else:
+                    # we have either the entire batch to go or less than it.
+                    this_run_max.value = sp.as_nat(quotient.value - (self.data.minting_ready_limit * self.data.minting_ready_batch_counter), message="THE_VOTE_RUN_MAX_CALCULATION_ERROR")
+                    # we can not transfer the entire limit. Otherwise we would mint too many
+                    self.data.ready_for_minting = True
+
+            sp.else:
+                this_run_max.value = quotient.value
+                self.data.ready_for_minting = True
+
+            # we do <= here to have at least one artwork be minted. So even if the value is 0 we mint 1 artwork
+            sp.while x.value < this_run_max.value:
+                # add the artwork to mint (its id)
+                self.data.artworks_to_mint.add(self.data.votes[next_index.value].artwork_id)
+                # increase x
+                x.value += 1
+                # we can only set the next_index if the variant is "index" (only matters for having 1 admission only)
+                sp.if (self.data.votes[next_index.value].next.is_variant("index")):
+                    # set the next_index to the next of the current highest_index
+                    next_index.value = self.data.votes[next_index.value].next.open_variant("index")
+
+            # overwrite this cause we can throw it away the next period anyway
+            self.data.highest_vote_index = next_index.value
+        sp.else:
+            self.data.artworks_to_mint = sp.set({}, t = sp.TNat)
+            self.data.ready_for_minting = True
+
+    @sp.entry_point
     def mint_artworks(self, max_amount):
         """
         Mints artworks that have been voted for
@@ -1257,34 +1320,10 @@ class TheVote(sp.Contract):
         """
 
         sp.verify(sp.now > self.data.deadline, "THE_VOTE_DEADLINE_NOT_PASSED")
-
-        # the first mint call will setup the data for the minting
-        # TODO move this to a separate endpoint
-        sp.if ~self.data.ready_for_minting:
-            self.data.artworks_to_mint = sp.set({}, t = sp.TNat)
-
-            #if there are no admissions we do not need to continue
-            sp.if self.data.admissions_this_period > 0:
-                quotient = sp.local("quotient", self.data.admissions_this_period // self.data.minting_ratio)
-                # x counts the artworks for minting
-                x = sp.local("x", sp.nat(0))
-                # set the next_index to the highest vote index (the votes are sorted)
-                next_index = sp.local("next_index", self.data.highest_vote_index)
-
-                # we do <= here to have at least one artwork be minted. So even if the value is 0 we mint 1 artwork
-                sp.while x.value <= quotient.value:
-                    # add the artwork to mint (its id)
-                    self.data.artworks_to_mint.add(self.data.votes[next_index.value].artwork_id)
-                    # increase x
-                    x.value += 1
-                    # we can only set the next_index if the variant is "index" (only matters for having 1 admission only)
-                    sp.if (self.data.votes[next_index.value].next.is_variant("index")):
-                        # set the next_index to the next of the current highest_index
-                        next_index.value = self.data.votes[next_index.value].next.open_variant("index")
-            self.data.ready_for_minting = True
-
         sp.verify(self.data.ready_for_minting, "THE_VOTE_NOT_READY_FOR_MINTING")
         sp.set_type_expr(max_amount, sp.TNat)
+
+        self.data.minting_ready_batch_counter = sp.nat(0)
 
         # current_index is the amount of artworks we have minted this call
         current_index = sp.local("current_index", sp.nat(0))
@@ -2545,6 +2584,7 @@ def test():
     the_vote.vote(artwork_id = 2, amount = 999, index = 2, new_next = sp.variant("index", 1), new_previous = sp.variant("end", sp.unit)).run(sender=tim)
     the_vote.vote(artwork_id = 3, amount = 1, index = 3, new_next = sp.variant("end", sp.unit), new_previous = sp.variant("index", 0)).run(sender=susan)
 
+    the_vote.ready_for_minting().run(sender=bob, now = sp.timestamp(0).add_days(8))
     the_vote.mint_artworks(1).run(sender=bob, now = sp.timestamp(0).add_days(8))
 
     bank.withdraw().run(sender=bob)
@@ -2583,6 +2623,7 @@ def test():
     spray.mint(to_=bob.address, amount=1000, token=sp.variant("new", spray_metadata)).run(sender=admin)
 
     scenario.h3("now we mint the wining artwork, that did not get any votes")
+    the_vote.ready_for_minting().run(sender=bob, now = sp.timestamp(0).add_days(8))
     the_vote.mint_artworks(1).run(sender=bob, now = sp.timestamp(0).add_days(8))
 
     scenario.h3("now bob can not vote on these artworks anymore")
@@ -2625,10 +2666,12 @@ def test():
         sender=bob)
 
     scenario.h3("Test that minting too many will not fail")
+    the_vote.ready_for_minting().run(sender=bob, now=sp.timestamp(0).add_days(16))
     the_vote.mint_artworks(3).run(sender=bob, now=sp.timestamp(0).add_days(16))
     scenario.h3("Check that mint and setting up voting data does not work anymore")
+    the_vote.ready_for_minting().run(sender=bob, valid = False)
     the_vote.mint_artworks(2).run(sender=bob, valid = False)
-
+    the_vote.ready_for_minting().run(sender=bob, valid=False)
     the_vote.mint_artworks(0).run(sender=bob, valid=False)
 
 @sp.add_target(name="Edge case THE_VOTE No Artwork", kind="testing")
@@ -2652,11 +2695,13 @@ def test():
                                                                 now=sp.timestamp(0).add_days(8))
 
     scenario.h3("Let the admission time end without a single admission")
+    the_vote.ready_for_minting().run(sender=admin, now=sp.timestamp(0).add_days(8))
     the_vote.mint_artworks(0).run(sender=admin, now=sp.timestamp(0).add_days(8))
 
     scenario.h3("Now the admission will make it")
     the_vote.admission(metadata=metadata, uploader=bob.address).run(sender=admin)
     scenario.h3("And make sure that we can mint that submission")
+    the_vote.ready_for_minting().run(sender=admin, now=sp.timestamp(0).add_days(16))
     the_vote.mint_artworks(0).run(sender=admin, now=sp.timestamp(0).add_days(16))
 
 @sp.add_target(name="The_Vote Detailed Testing", kind="testing")
@@ -2788,6 +2833,7 @@ def test():
     TestHelper.test_vote(alice, the_vote, scenario, artwork_id = 3, amount = 2, index = 3, new_next = 0, new_previous = -1)
 
     scenario.h2("Mint top artwork, end the cycle")
+    the_vote.ready_for_minting().run(sender=admin, now=sp.timestamp(0).add_days(8))
     the_vote.mint_artworks(1).run(sender=admin, now=sp.timestamp(0).add_days(8))
 
     bank.withdraw().run(sender=bob)
@@ -2812,6 +2858,7 @@ def test():
     # 6 5 4
 
     scenario.h2("Mint top artwork, end the cycle")
+    the_vote.ready_for_minting().run(sender=admin, now=sp.timestamp(0).add_days(16))
     the_vote.mint_artworks(1).run(sender=admin, now=sp.timestamp(0).add_days(16))
     bank.withdraw().run(sender=bob)
     bank.withdraw().run(sender=alice)
@@ -2886,6 +2933,7 @@ def test():
     TestHelper.test_vote(bob, the_vote, scenario, artwork_id=0, amount=1, index=0, new_next=-1, new_previous=-1)
     TestHelper.test_vote(dan, the_vote, scenario, artwork_id=0, amount=1, index=0, new_next=-1, new_previous=-1)
 
+    the_vote.ready_for_minting().run(sender=admin, now=sp.timestamp(0).add_days(7).add_minutes(4))
     the_vote.mint_artworks(1).run(sender=admin, now=sp.timestamp(0).add_days(7).add_minutes(5))
 
     scenario.h3("View is not empty")
@@ -2927,6 +2975,7 @@ def test():
     the_vote.admission(metadata=tok1_md, uploader=alice.address).run(sender=admin, valid=False)
 
     scenario.h2("Have an empty voting-cycle here because the deadline for it passed already")
+    the_vote.ready_for_minting().run(sender=admin)
     the_vote.mint_artworks(0).run(sender=admin)
     scenario.h2("Admission a new token")
     the_vote.admission(metadata=tok1_md, uploader=alice.address).run(sender=admin)
@@ -2936,6 +2985,7 @@ def test():
     TestHelper.test_vote(bob, the_vote, scenario, artwork_id=1, amount=1, index=0, new_next=-1, new_previous=-1)
     TestHelper.test_vote(dan, the_vote, scenario, artwork_id=1, amount=1, index=0, new_next=-1, new_previous=-1)
 
+    the_vote.ready_for_minting().run(sender=admin, now=sp.timestamp(0).add_minutes(11).add_days(21))
     the_vote.mint_artworks(1).run(sender=admin, now=sp.timestamp(0).add_minutes(12).add_days(21))
     scenario.h3("dan bids")
     scenario += auction_house.bid(1).run(sender=dan,amount=sp.mutez(3000000), now=sp.timestamp(0).add_minutes(17).add_days(21))
@@ -3001,6 +3051,7 @@ def test():
     the_vote.admission(metadata=tok0_md, uploader=alice.address).run(sender=admin)
 
     scenario.h3("Mint without votes")
+    the_vote.ready_for_minting().run(sender=admin, now=sp.timestamp(0).add_days(7).add_minutes(4))
     the_vote.mint_artworks(1).run(sender=admin, now=sp.timestamp(0).add_days(7).add_minutes(5))
 
     scenario.h3("dan bids")
@@ -3067,6 +3118,7 @@ def test():
     the_vote.vote(artwork_id = 10, amount = 1, index = 10, new_next = sp.variant("index", 0), new_previous = sp.variant("index", 20)).run(sender=dan)
 
     scenario.h2("now mint the artworks in a single call")
+    the_vote.ready_for_minting().run(sender=admin, now=sp.timestamp(0).add_days(7).add_minutes(5))
     the_vote.mint_artworks(5).run(sender=admin, now=sp.timestamp(0).add_days(7).add_minutes(5))
 
     scenario.h3("end the auctions before anyone has bid on it")
@@ -3123,6 +3175,7 @@ def test():
     bank.withdraw().run(sender=alice, valid=False)
 
     scenario.h2("now mint the artwork in 3 calls because of the limit")
+    the_vote.ready_for_minting().run(sender=admin, now=sp.timestamp(0).add_days(7).add_minutes(5))
     the_vote.mint_artworks(1).run(sender=admin, now=sp.timestamp(0).add_days(7).add_minutes(5))
     the_vote.mint_artworks(1).run(sender=admin, now=sp.timestamp(0).add_days(7).add_minutes(5))
     the_vote.mint_artworks(1).run(sender=admin, now=sp.timestamp(0).add_days(7).add_minutes(5))
@@ -3143,6 +3196,151 @@ def test():
         voter_money_pool.withdraw().run(sender=users[j])
 
     scenario.verify(voter_money_pool.balance == sp.mutez(0))
+
+@sp.add_target(name="Integration Test for readying a single artwork above the limit", kind="integration")
+def test():
+    scenario = sp.test_scenario()
+    scenario.h1("Integration Test for readying a single artwork above the limit")
+    scenario.table_of_contents()
+
+    admin = sp.test_account("Administrator")
+
+    (fa2, auction_house, voter_money_pool, the_vote, spray, bank) = TestHelper.build_contracts(admin, scenario)
+
+    alice = sp.test_account("Alice")
+
+    tok0_md = TestHelper.make_metadata(
+        name = "The Token Zero",
+        decimals = 0,
+        symbol= "TK0")
+
+    minting_ready_limit = 21
+
+    the_vote.set_minting_ready_limit(minting_ready_limit).run(sender=admin)
+
+
+    scenario.h3("set minting ratio")
+    minting_ratio = 2
+    the_vote.set_minting_ratio(minting_ratio).run(sender=admin)
+
+    scenario.h3("Admit 52 artworks")
+
+    artwork_amount = minting_ready_limit * minting_ratio + 1
+    for i in range (0, artwork_amount):
+        the_vote.admission(metadata=tok0_md, uploader=alice.address).run(sender=admin)
+
+
+    scenario.h2("now ready the artworks in 2 calls")
+
+    for j in range(0, int((int(artwork_amount / minting_ratio)  + 1) / minting_ready_limit) + 1):
+        the_vote.ready_for_minting().run(sender=admin, now=sp.timestamp(0).add_days(7).add_minutes(5))
+
+    scenario.h2("and mint them in a single call")
+    the_vote.mint_artworks(int(artwork_amount / minting_ratio) + 1).run(sender=admin, now=sp.timestamp(0).add_days(7).add_minutes(5))
+
+    scenario.h2("now test that once minting started we are indeed ready")
+    the_vote.ready_for_minting().run(sender=admin, now=sp.timestamp(0).add_days(7).add_minutes(5), valid=False)
+    scenario.h2("now test that the next mint would fail")
+    the_vote.mint_artworks(1).run(sender=admin, now=sp.timestamp(0).add_days(7).add_minutes(6), valid=False)
+    scenario.verify(fa2.count_tokens() == int(artwork_amount / minting_ratio) + 1)
+
+
+@sp.add_target(name="Integration Test for readying bigger numbers of artworks", kind="integration")
+def test():
+    scenario = sp.test_scenario()
+    scenario.h1("Integration Test for readying bigger numbers of artworks")
+    scenario.table_of_contents()
+
+    admin = sp.test_account("Administrator")
+
+    (fa2, auction_house, voter_money_pool, the_vote, spray, bank) = TestHelper.build_contracts(admin, scenario)
+
+    alice = sp.test_account("Alice")
+
+    tok0_md = TestHelper.make_metadata(
+        name = "The Token Zero",
+        decimals = 0,
+        symbol= "TK0")
+
+
+    minting_ready_limit = 10
+
+    the_vote.set_minting_ready_limit(minting_ready_limit).run(sender=admin)
+
+    scenario.h3("Admit 52 artworks")
+
+    artwork_amount = 52
+    for i in range (0, artwork_amount):
+        the_vote.admission(metadata=tok0_md, uploader=alice.address).run(sender=admin)
+
+    scenario.h3("set minting ratio")
+    minting_ratio = 2
+    the_vote.set_minting_ratio(minting_ratio).run(sender=admin)
+
+    scenario.h2("now ready the artworks in individual calls")
+
+    for j in range(0, int((int(artwork_amount / minting_ratio)  + 1) / minting_ready_limit) + 1):
+        the_vote.ready_for_minting().run(sender=admin, now=sp.timestamp(0).add_days(7).add_minutes(5))
+
+    scenario.h2("and mint them in a single call")
+    the_vote.mint_artworks(int(artwork_amount / minting_ratio) + 1).run(sender=admin, now=sp.timestamp(0).add_days(7).add_minutes(5))
+
+    scenario.h2("now test that once minting started we are indeed ready")
+    the_vote.ready_for_minting().run(sender=admin, now=sp.timestamp(0).add_days(7).add_minutes(5), valid=False)
+    scenario.h2("now test that the next mint would fail")
+    the_vote.mint_artworks(1).run(sender=admin, now=sp.timestamp(0).add_days(7).add_minutes(6), valid=False)
+    scenario.verify(fa2.count_tokens() == int(artwork_amount / minting_ratio) + 1)
+
+@sp.add_target(name="Test for readying artworks for minting 1 by 1", kind="testing")
+def test():
+    scenario = sp.test_scenario()
+    scenario.h1("Test for readying artworks for minting 1 by 1")
+    scenario.table_of_contents()
+
+    admin = sp.test_account("Administrator")
+
+    (fa2, auction_house, voter_money_pool, the_vote, spray, bank) = TestHelper.build_contracts(admin, scenario)
+
+    alice = sp.test_account("Alice")
+
+    tok0_md = TestHelper.make_metadata(
+        name = "The Token Zero",
+        decimals = 0,
+        symbol= "TK0" )
+
+    scenario.h3("alice can not set minting_ready_limit")
+    the_vote.set_minting_ready_limit(3).run(sender=alice, valid=False)
+
+    scenario.h3("should not be able to set minting ready limit to 0")
+    the_vote.set_minting_ready_limit(0).run(sender=admin, valid=False)
+
+    scenario.h3("set the minting limit to 1")
+    the_vote.set_minting_ready_limit(1).run(sender=admin)
+
+    scenario.h3("Admit 10 artworks")
+
+    artwork_amount = 10
+    for i in range (0, artwork_amount):
+        the_vote.admission(metadata=tok0_md, uploader=alice.address).run(sender=admin)
+
+    scenario.h3("set minting ratio")
+    minting_ratio = 2
+    the_vote.set_minting_ratio(minting_ratio).run(sender=admin)
+    scenario.h3("alice can not set minting_ratio")
+    the_vote.set_minting_ratio(3).run(sender=alice, valid=False)
+    scenario.h2("now ready the artworks in individual calls")
+
+    for j in range(0, int(artwork_amount / minting_ratio) + 1):
+        the_vote.ready_for_minting().run(sender=admin, now=sp.timestamp(0).add_days(7).add_minutes(5))
+
+    scenario.h2("and mint them in a single call")
+    the_vote.mint_artworks(int(artwork_amount / minting_ratio) + 1).run(sender=admin, now=sp.timestamp(0).add_days(7).add_minutes(5))
+
+    scenario.h2("now test that once minting started we are indeed ready")
+    the_vote.ready_for_minting().run(sender=admin, now=sp.timestamp(0).add_days(7).add_minutes(5), valid=False)
+    scenario.h2("now test that the next mint would fail")
+    the_vote.mint_artworks(1).run(sender=admin, now=sp.timestamp(0).add_days(7).add_minutes(6), valid=False)
+    scenario.verify(fa2.count_tokens() == int(artwork_amount / minting_ratio) + 1)
 
 @sp.add_target(name="Integration Test for minting artworks 1 by 1", kind="integration")
 def test():
@@ -3166,9 +3364,12 @@ def test():
         the_vote.admission(metadata=tok0_md, uploader=alice.address).run(sender=admin)
 
     scenario.h2("now mint the artworks in individual calls")
+    the_vote.ready_for_minting().run(sender=admin, now=sp.timestamp(0).add_days(7).add_minutes(5))
     for j in range(0, int(artwork_amount / 10) + 1):
         the_vote.mint_artworks(1).run(sender=admin, now=sp.timestamp(0).add_days(7).add_minutes(5))
 
+    scenario.h2("now test that once minting started we are indeed ready", )
+    the_vote.ready_for_minting().run(sender=admin, now=sp.timestamp(0).add_days(7).add_minutes(5), valid=False)
     scenario.h2("now test that the next mint would fail")
     the_vote.mint_artworks(1).run(sender=admin, now=sp.timestamp(0).add_days(7).add_minutes(6), valid=False)
 
@@ -3210,6 +3411,7 @@ def test():
     bank.register_user(alice.address).run(sender=admin)
     bank.withdraw().run(sender=alice, valid=False)
 
+    the_vote.ready_for_minting().run(sender=admin, now=sp.timestamp(0).add_days(7).add_minutes(5))
     scenario.h2("now mint the artworks/transmit the voters")
     for k in range(0, voter_amount):
         the_vote.mint_artworks(1).run(sender=admin, now=sp.timestamp(0).add_days(7).add_minutes(5))
@@ -3217,6 +3419,7 @@ def test():
             the_vote.set_votes_transmission_limit(10).run(sender=admin, valid=False)
 
     scenario.h3("the vote minting should be completed")
+    the_vote.ready_for_minting().run(sender=admin, now=sp.timestamp(0).add_days(7).add_minutes(6), valid=False)
     the_vote.mint_artworks(0).run(sender=admin, valid=False, now=sp.timestamp(0).add_days(7).add_minutes(6))
 
     bid_amount = 100000000 * 15 * voter_amount
@@ -3283,6 +3486,7 @@ def test():
                   new_previous=sp.variant("index", 0)).run(sender=bob)
 
     scenario.h2("now mint the artworks/transmit the voters")
+    the_vote.ready_for_minting().run(sender=admin, now=sp.timestamp(0).add_days(7).add_minutes(5))
     the_vote.mint_artworks(1).run(sender=admin, now=sp.timestamp(0).add_days(7).add_minutes(5))
 
     scenario.h3("can not vote during minting")
@@ -3290,6 +3494,8 @@ def test():
                   new_previous=sp.variant("end", sp.unit)).run(sender=alice, valid=False)
     scenario.h3("can not admission during minting")
     the_vote.admission(metadata=tok0_md, uploader=alice.address).run(sender=admin, valid=False)
+    scenario.h3("can not ready for minting during minting")
+    the_vote.ready_for_minting().run(sender=admin, now=sp.timestamp(0).add_days(7).add_minutes(5), valid=False)
 
     the_vote.mint_artworks(1).run(sender=admin, now=sp.timestamp(0).add_days(7).add_minutes(5))
     scenario.verify(fa2.count_tokens() == 1)
@@ -3332,6 +3538,7 @@ def test():
                       new_previous=sp.variant("end", sp.unit)).run(sender=user)
         users.append(user)
 
+    the_vote.ready_for_minting().run(sender=admin, now=sp.timestamp(0).add_days(7).add_minutes(5))
     the_vote.mint_artworks(1).run(sender=admin, now=sp.timestamp(0).add_days(7).add_minutes(5))
     the_vote.mint_artworks(1).run(sender=admin, now=sp.timestamp(0).add_days(7).add_minutes(6), valid=False)
 
@@ -3344,6 +3551,7 @@ def test():
         the_vote.vote(artwork_id=1, amount=5, index=0, new_next=sp.variant("end", sp.unit),
                       new_previous=sp.variant("end", sp.unit)).run(sender=users[j])
 
+    the_vote.ready_for_minting().run(sender=admin, now=sp.timestamp(0).add_days(16).add_minutes(5))
     the_vote.mint_artworks(1).run(sender=admin, now=sp.timestamp(0).add_days(16).add_minutes(5))
     the_vote.mint_artworks(1).run(sender=admin, now=sp.timestamp(0).add_days(16).add_minutes(6))
     the_vote.mint_artworks(1).run(sender=admin, now=sp.timestamp(0).add_days(16).add_minutes(6), valid=False)
@@ -3357,6 +3565,7 @@ def test():
         the_vote.vote(artwork_id=2, amount=5, index=0, new_next=sp.variant("end", sp.unit),
                       new_previous=sp.variant("end", sp.unit)).run(sender=users[k])
 
+    the_vote.ready_for_minting().run(sender=admin, now=sp.timestamp(0).add_days(27).add_minutes(5))
     the_vote.mint_artworks(1).run(sender=admin, now=sp.timestamp(0).add_days(27).add_minutes(5))
     the_vote.mint_artworks(1).run(sender=admin, now=sp.timestamp(0).add_days(27).add_minutes(6), valid=False)
 
@@ -3395,6 +3604,7 @@ def test():
                       new_previous=sp.variant("end", sp.unit)).run(sender=user)
         users.append(user)
 
+    the_vote.ready_for_minting().run(sender=admin, now=sp.timestamp(0).add_days(7).add_minutes(5))
     the_vote.set_votes_transmission_limit(votes_transmission_limit).run(sender=admin)
     for k in range (0, factor):
         # we create a user, withdraw with them and vote with them.
@@ -3460,6 +3670,7 @@ def test():
                   new_previous=sp.variant("index", 0)).run(sender=bob)
 
     scenario.h2("now mint the artworks/transmit the voters")
+    the_vote.ready_for_minting().run(sender=admin, now=sp.timestamp(0).add_days(7).add_minutes(5))
     the_vote.mint_artworks(1).run(sender=admin, now=sp.timestamp(0).add_days(7).add_minutes(5))
     scenario.h2("can not set transmission limit during minting")
     the_vote.set_votes_transmission_limit(100).run(sender=admin, valid=False)
@@ -3504,6 +3715,7 @@ def test():
 
     the_vote.set_next_deadline_minutes(10).run(sender=admin)
 
+    the_vote.ready_for_minting().run(sender=admin, now=sp.timestamp(0).add_days(7).add_minutes(1))
     the_vote.mint_artworks(1).run(sender=admin, now=sp.timestamp(0).add_days(7).add_minutes(1))
     scenario.h3("View is not empty")
     scenario.verify(sp.len(auction_house.get_expired_auctions(sp.timestamp(0).add_minutes(12).add_days(7))) > 0)
@@ -3541,6 +3753,7 @@ def test():
         symbol= "TK1" )
 
     scenario.h2("Have an empty voting-cycle here")
+    the_vote.ready_for_minting().run(sender=admin, now=sp.timestamp(0).add_days(8).add_minutes(0))
     the_vote.mint_artworks(0).run(sender=admin,  now=sp.timestamp(0).add_minutes(0).add_days(8))
     scenario.h2("Admission again and after timeline check again")
     the_vote.admission(metadata=tok1_md, uploader=alice.address).run(sender=admin, now=sp.timestamp(0).add_minutes(1).add_days(8))
