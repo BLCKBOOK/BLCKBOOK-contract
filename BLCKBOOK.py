@@ -644,12 +644,39 @@ class FA2Spray(sp.Contract):
     refer to FA2_lib.
     """
 
-    def __init__(self, administrator, the_vote, metadata_base, metadata_url):
+    def __init__(self, administrator, the_vote):
+
+        list_of_views = [
+            self.get_balance
+            , self.does_token_exist
+            , self.count_tokens
+            , self.all_tokens
+            , self.is_operator
+        ]
+
+        metadata_base = {
+            "name": "BLCKBOOK $PRAY",
+            "version": "1.0.0",
+            "views": list_of_views,
+            "description": "This is an adapted  minimal implementation of FA2 (TZIP-012) using SmartPy. It is used for the $PRAY-Token",
+            "interfaces": ["TZIP-012", "TZIP-016"],
+            "authors": ["Niels Hanselmann", "SmartPy <https://smartpy.io/#contact>"],
+            "homepage": "https://blckbook.vote",
+            "source": {
+                "tools": ["SmartPy"],
+                "location": "https://github.com/BLCKBOOK/BLCKBOOK-contract",
+            },
+            "permissions": {
+                "operator": "owner-or-operator-transfer",
+                "receiver": "owner-no-hook",
+                "sender": "owner-no-hook",
+            },
+        }
         self.init(
             administrator=administrator,
             the_vote=the_vote,
             ledger=sp.big_map(tkey=sp.TPair(sp.TAddress, sp.TNat), tvalue=sp.TNat),
-            metadata=sp.utils.metadata_of_url(metadata_url),
+            metadata=sp.big_map(tkey=sp.TString, tvalue=sp.TBytes),
             next_token_id=sp.nat(0),
             operators=sp.big_map(
                 tkey=sp.TRecord(
@@ -665,13 +692,14 @@ class FA2Spray(sp.Contract):
                 ),
             ),
         )
-        metadata_base["views"] = [
-            self.all_tokens,
-            self.get_balance,
-            self.is_operator,
-            self.total_supply,
-        ]
-        self.init_metadata("metadata_base", metadata_base)
+
+        # Helper method that builds the metadata and produces the JSON representation as an artifact.
+        self.init_metadata("BLCKBOOK-$PRAY", metadata_base)  # the string is just for the output of the online-IDE
+
+    @sp.entry_point
+    def set_metadata(self, params):
+        sp.verify(sp.sender == self.data.administrator, 'FA2_NOT_ADMIN')
+        self.data.metadata[params.k] = params.v
 
     @sp.entry_point
     def transfer(self, batch):
@@ -766,6 +794,11 @@ class FA2Spray(sp.Contract):
         self.data.administrator = params
 
     @sp.entry_point
+    def set_the_vote(self, params):
+        sp.verify(sp.sender == self.data.administrator, "FA2_NOT_ADMIN")
+        self.data.the_vote = params
+
+    @sp.entry_point
     def mint(self, to_, amount, token):
         """(Admin only) Create new tokens from scratch and assign
         them to `to_`.
@@ -803,6 +836,17 @@ class FA2Spray(sp.Contract):
         """(Onchain view) Return the list of all the `token_id` known to the contract."""
         sp.result(sp.range(0, self.data.next_token_id))
 
+    @sp.onchain_view(pure = True)
+    def count_tokens(self):
+        """Get how many tokens are in this FA2 contract."""
+        sp.result(self.data.next_token_id)
+
+    @sp.onchain_view(pure = True)
+    def does_token_exist(self, tok):
+        "Ask whether a token ID is exists."
+        sp.set_type(tok, sp.TNat)
+        sp.result(self.data.token_metadata.contains(tok))
+
     @sp.onchain_view(pure=True)
     def get_balance(self, params):
         """(Onchain view) Return the balance of an address for the specified `token_id`."""
@@ -827,24 +871,6 @@ class FA2Spray(sp.Contract):
         """(Onchain view) Return whether `operator` is allowed to transfer `token_id` tokens
         owned by `owner`."""
         sp.result(self.data.operators.contains(params))
-
-# TODO: fix this metadata_base
-metadata_base = {
-    "version": "1.0.0",
-    "description": "This is an adapted  minimal implementation of FA2 (TZIP-012) using SmartPy. It is used for the $PRAY-Token",
-    "interfaces": ["TZIP-012", "TZIP-016"],
-    "authors": ["SmartPy <https://smartpy.io/#contact>"],
-    "homepage": "https://smartpy.io/ide?template=fa2_fungible_minimal.py",
-    "source": {
-        "tools": ["SmartPy"],
-        "location": "https://gitlab.com/SmartPy/smartpy/-/raw/master/python/templates/fa2_fungible_minimal.py",
-    },
-    "permissions": {
-        "operator": "owner-or-operator-transfer",
-        "receiver": "owner-no-hook",
-        "sender": "owner-no-hook",
-    },
-}
 
 class SprayBank(sp.Contract):
     def __init__(self, administrator, spray_address, the_vote_address):
@@ -1483,7 +1509,7 @@ class TestHelper:
                      deadline=sp.now.add_days(7))
         scenario += the_vote
 
-        spray = FA2Spray(admin_address, the_vote.address, metadata_base, "https//example.com")
+        spray = FA2Spray(admin_address, the_vote.address)
         scenario += spray
 
         bank = SprayBank(administrator=admin_address, spray_address=spray.address, the_vote_address=admin_address)
@@ -1547,7 +1573,7 @@ spray_metadata = TestHelper.make_metadata(
 @sp.add_target(name="For Origination", kind="origination")
 def test():
 
-    admin_address = sp.address("tz1PEbaFp9jE6syH5xg29YRegbwLLehzK3w2")
+    admin_address = sp.address("tz1PEbaFp9jE6syH5xg29YRegbwLLehADMIN")
     scenario = sp.test_scenario()
     scenario.h1("For origination")
     scenario.table_of_contents()
@@ -1569,16 +1595,16 @@ def test():
 
     scenario.h2("TheVote")
     the_vote = TheVote(administrator=admin_address,
-        tokens_contract_address = sp.address('KT1HAtdXKvXqK2He3Xr2xmHQ9cYrxPTL7X9Z'),
-        auction_house_address=sp.address('KT1XeA6tZYeBCm7aux3SAPswTuRE72R3VXZ1'),
-        voter_money_pool_address=sp.address('KT1XeA6tZYeBCm7aux3SAPswTuRE72R3VZZZ'),
-        spray_bank_address=sp.address('KT1XeA6tZYeBCm7aux3SAPswTuRE72R3V111'),
-        spray_contract_address=sp.address('KT1XeA6tZYeBCm7aux3SAPswTuRE72R3V212'),
+        tokens_contract_address = sp.address('KT1HAtdXKvXqK2He3Xr2xmHQ9cYrxPTTOKEN'),
+        auction_house_address=sp.address('KT1XeA6tZYeBCm7aux3SAPswTuRE7auction'),
+        voter_money_pool_address=sp.address('KT1XeA6tZYeBCm7aux3SAPswTuRE72R3pool'),
+        spray_bank_address=sp.address('KT1XeA6tZYeBCm7aux3SAPswTuRE72R3bank'),
+        spray_contract_address=sp.address('KT1XeA6tZYeBCm7aux3SAPswTuRE72R3spray'),
         deadline=sp.now.add_days(7))
     scenario += the_vote
 
     scenario.h2("Spray")
-    spray = FA2Spray(admin_address, the_vote.address, metadata_base, "https//example.com")
+    spray = FA2Spray(admin_address, the_vote.address)
     scenario += spray
 
     scenario.h2("Bank")
@@ -2428,7 +2454,7 @@ def test():
     bob = sp.test_account("Bob")
     alice = sp.test_account("Alice")
 
-    spray = FA2Spray(admin.address, admin.address, metadata_base, "https//example.com")
+    spray = FA2Spray(admin.address, admin.address)
     scenario += spray
 
     spray_metadata = TestHelper.make_metadata(
