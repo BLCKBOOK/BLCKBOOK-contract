@@ -1012,7 +1012,6 @@ class TheVote(sp.Contract):
             votes_transmission_batch_counter=sp.TNat,
             next_deadline_minutes=sp.TInt,
             minting_ready_limit=sp.TNat,
-            minting_ready_index=sp.TNat,
             minting_ready_batch_counter=sp.TNat,
         ))
         self.init(
@@ -1045,7 +1044,6 @@ class TheVote(sp.Contract):
             votes_transmission_batch_counter = sp.nat(0),
             next_deadline_minutes = sp.int(10080),
             minting_ready_limit= sp.nat(200),
-            minting_ready_index= sp.nat(0),
             minting_ready_batch_counter= sp.nat(0)
             # after origination, we have a week to admit artworks
         )
