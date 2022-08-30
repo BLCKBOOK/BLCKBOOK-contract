@@ -433,7 +433,7 @@ class AuctionHouseContract(sp.Contract):
 
     @sp.entry_point
     def set_metadata(self, params):
-        sp.verify(sp.sender == self.data.administrator, VoterMoneyPoolErrorMessage.NOT_ADMIN)
+        sp.verify(sp.sender == self.data.administrator, AuctionErrorMessage.NOT_ADMIN)
         self.data.metadata[params.k] = params.v
 
     @sp.entry_point
@@ -1057,6 +1057,11 @@ class TheVote(sp.Contract):
     def set_spray_contract(self, params):
         sp.verify(sp.sender == self.data.administrator, 'THE_VOTE_NOT_ADMIN')
         self.data.spray_contract_address = params
+
+    @sp.entry_point
+    def set_metadata(self, params):
+        sp.verify(sp.sender == self.data.administrator, 'THE_VOTE_NOT_ADMIN')
+        self.data.metadata[params.k] = params.v
 
     @sp.entry_point
     def set_minting_ratio(self, params):
